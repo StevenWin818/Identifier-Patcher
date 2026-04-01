@@ -20,6 +20,7 @@ import org.matrix.TEESimulator.interception.keystore.InterceptorUtils
 import org.matrix.TEESimulator.interception.keystore.KeyIdentifier
 import org.matrix.TEESimulator.logging.SystemLogger
 import org.matrix.TEESimulator.pki.CertificateGenerator
+import org.matrix.TEESimulator.pki.CertificateHelper
 import org.matrix.TEESimulator.util.AndroidDeviceUtils
 
 /**
@@ -54,8 +55,13 @@ class KeyMintSecurityLevelInterceptor(
                 logTransaction(txId, transactionNames[code]!!, callingUid, callingPid)
 
                 if (!shouldSkip) {
-                    rewriteGenerateKeyAttestationIds(txId, data)
+                    rewriteGenerateKeyAttestationIds(txId, callingUid, data)
                     return TransactionResult.Continue
+                } else {
+                    val packages = ConfigurationManager.getPackagesForUid(callingUid).joinToString()
+                    SystemLogger.debug(
+                        "[TX_ID: $txId] Skip generateKey rewrite for uid=$callingUid packages=[$packages] (not in target.txt)."
+                    )
                 }
             }
             CREATE_OPERATION_TRANSACTION -> {
@@ -148,7 +154,7 @@ class KeyMintSecurityLevelInterceptor(
         return TransactionResult.SkipTransaction
     }
 
-    private fun rewriteGenerateKeyAttestationIds(txId: Long, data: Parcel) {
+    private fun rewriteGenerateKeyAttestationIds(txId: Long, callingUid: Int, data: Parcel) {
         runCatching {
                 data.setDataPosition(0)
                 data.enforceInterface(IKeystoreSecurityLevel.DESCRIPTOR)
@@ -156,8 +162,8 @@ class KeyMintSecurityLevelInterceptor(
                 val keyDescriptor = data.readTypedObject(KeyDescriptor.CREATOR)
                 val attestationKey = data.readTypedObject(KeyDescriptor.CREATOR)
                 val params = data.createTypedArray(KeyParameter.CREATOR)
-                val flags = data.readInt()
-                val entropy = data.createByteArray()
+                val flags = if (data.dataAvail() > 0) data.readInt() else 0
+                val entropy = if (data.dataAvail() > 0) data.createByteArray() else null
 
                 if (keyDescriptor == null || params == null) {
                     SystemLogger.warning(
@@ -167,23 +173,25 @@ class KeyMintSecurityLevelInterceptor(
                     return
                 }
 
-                val rewrittenCount = rewriteAttestationIdParams(params)
+                val packageNames =
+                    ConfigurationManager.getPackagesForUid(callingUid)
+                        .joinToString()
+                val (rewrittenParams, rewrittenCount, insertedCount) =
+                    rewriteAttestationIdParams(params)
 
                 data.setDataPosition(0)
                 data.writeInterfaceToken(IKeystoreSecurityLevel.DESCRIPTOR)
                 data.writeTypedObject(keyDescriptor, 0)
                 data.writeTypedObject(attestationKey, 0)
-                data.writeTypedArray(params, 0)
+                data.writeTypedArray(rewrittenParams, 0)
                 data.writeInt(flags)
                 data.writeByteArray(entropy)
                 data.setDataSize(data.dataPosition())
                 data.setDataPosition(0)
 
-                if (rewrittenCount > 0) {
-                    SystemLogger.info(
-                        "[TX_ID: $txId] Rewrote $rewrittenCount attestation ID params for ${keyDescriptor.alias}."
-                    )
-                }
+                SystemLogger.info(
+                    "[TX_ID: $txId] generateKey rewrite result alias=${keyDescriptor.alias}, packages=[$packageNames], rewritten=$rewrittenCount, inserted=$insertedCount, totalParams=${rewrittenParams.size}."
+                )
             }
             .onFailure {
                 SystemLogger.error(
@@ -194,14 +202,33 @@ class KeyMintSecurityLevelInterceptor(
             }
     }
 
-    private fun rewriteAttestationIdParams(params: Array<KeyParameter>): Int {
+    private fun rewriteAttestationIdParams(
+        params: Array<KeyParameter>
+    ): Triple<Array<KeyParameter>, Int, Int> {
+        val rewrittenParams = params.toMutableList()
+        val existingTags = mutableSetOf<Int>()
         var rewritten = 0
+        var inserted = 0
+
         for (param in params) {
+            existingTags.add(param.tag)
             val replacement = attestationIdOverrides[param.tag] ?: continue
             param.value = KeyParameterValue.blob(replacement)
             rewritten += 1
         }
-        return rewritten
+
+        for ((tag, replacement) in attestationIdOverrides) {
+            if (existingTags.contains(tag)) continue
+
+            rewrittenParams +=
+                KeyParameter().apply {
+                    this.tag = tag
+                    this.value = KeyParameterValue.blob(replacement)
+                }
+            inserted += 1
+        }
+
+        return Triple(rewrittenParams.toTypedArray(), rewritten, inserted)
     }
 
     /**
