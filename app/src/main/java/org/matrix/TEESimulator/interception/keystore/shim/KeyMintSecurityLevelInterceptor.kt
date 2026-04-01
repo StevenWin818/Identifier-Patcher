@@ -56,7 +56,7 @@ class KeyMintSecurityLevelInterceptor(
 
                 if (!shouldSkip) {
                     rewriteGenerateKeyAttestationIds(txId, callingUid, data)
-                    return TransactionResult.Continue
+                    return TransactionResult.OverrideData(data)
                 } else {
                     val packages = ConfigurationManager.getPackagesForUid(callingUid).joinToString()
                     SystemLogger.debug(

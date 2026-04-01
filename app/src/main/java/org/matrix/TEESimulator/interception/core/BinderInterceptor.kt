@@ -136,10 +136,12 @@ abstract class BinderInterceptor : Binder() {
 
         // We must create a new parcel containing only the original transaction data.
         val transactionData = Parcel.obtain()
+        var shouldRecycleTransactionData = true
         return try {
             transactionData.appendFrom(data, data.dataPosition(), dataSize.toInt())
             transactionData.setDataPosition(0)
-            onPreTransact(
+            val result =
+                onPreTransact(
                 txId,
                 target,
                 transactionCode,
@@ -148,8 +150,14 @@ abstract class BinderInterceptor : Binder() {
                 callingPid,
                 transactionData,
             )
+            if (result is TransactionResult.OverrideData && result.data === transactionData) {
+                shouldRecycleTransactionData = false
+            }
+            result
         } finally {
-            transactionData.recycle()
+            if (shouldRecycleTransactionData) {
+                transactionData.recycle()
+            }
         }
     }
 
@@ -164,6 +172,8 @@ abstract class BinderInterceptor : Binder() {
         // The native hook also marshals the original data and reply parcels.
         val transactionData = Parcel.obtain()
         val transactionReply = Parcel.obtain()
+        var shouldRecycleTransactionData = true
+        var shouldRecycleTransactionReply = true
         return try {
             val dataSize = data.readLong().toInt()
             transactionData.appendFrom(data, data.dataPosition(), dataSize)
@@ -180,7 +190,8 @@ abstract class BinderInterceptor : Binder() {
                     transactionReply
                 } else null
 
-            onPostTransact(
+            val result =
+                onPostTransact(
                 txId,
                 target,
                 transactionCode,
@@ -191,9 +202,20 @@ abstract class BinderInterceptor : Binder() {
                 reply,
                 resultCode,
             )
+            if (result is TransactionResult.OverrideData && result.data === transactionData) {
+                shouldRecycleTransactionData = false
+            }
+            if (result is TransactionResult.OverrideReply && result.reply === transactionReply) {
+                shouldRecycleTransactionReply = false
+            }
+            result
         } finally {
-            transactionData.recycle()
-            transactionReply.recycle()
+            if (shouldRecycleTransactionData) {
+                transactionData.recycle()
+            }
+            if (shouldRecycleTransactionReply) {
+                transactionReply.recycle()
+            }
         }
     }
 
