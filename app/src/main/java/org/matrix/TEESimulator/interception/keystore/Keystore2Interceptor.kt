@@ -209,6 +209,10 @@ object Keystore2Interceptor : AbstractKeystoreInterceptor() {
                     TransactionResult.SkipTransaction
                 }
         } else if (code == GET_KEY_ENTRY_TRANSACTION) {
+            if (!ConfigurationManager.shouldPatch(callingUid)) {
+                return TransactionResult.SkipTransaction
+            }
+
             data.enforceInterface(IKeystoreService.DESCRIPTOR)
             val keyDescriptor =
                 data.readTypedObject(KeyDescriptor.CREATOR)

@@ -42,6 +42,13 @@ object AttestationPatcher {
             return originalChain ?: emptyArray()
         }
 
+        if (!ConfigurationManager.shouldPatch(uid)) {
+            SystemLogger.info(
+                "Keybox-based chain patching is disabled. Returning original hardware chain for UID $uid."
+            )
+            return originalChain
+        }
+
         return runCatching {
                 val originalLeaf = originalChain[0] as X509Certificate
                 val originalLeafHolder = X509CertificateHolder(originalLeaf.encoded)

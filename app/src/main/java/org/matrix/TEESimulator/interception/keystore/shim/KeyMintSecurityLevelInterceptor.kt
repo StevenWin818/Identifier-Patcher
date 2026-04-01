@@ -8,11 +8,11 @@ import android.hardware.security.keymint.Tag
 import android.os.IBinder
 import android.os.Parcel
 import android.system.keystore2.*
+import java.nio.charset.StandardCharsets
 import java.security.KeyPair
 import java.security.SecureRandom
 import java.security.cert.Certificate
 import java.util.concurrent.ConcurrentHashMap
-import org.matrix.TEESimulator.attestation.AttestationPatcher
 import org.matrix.TEESimulator.attestation.KeyMintAttestation
 import org.matrix.TEESimulator.config.ConfigurationManager
 import org.matrix.TEESimulator.interception.core.BinderInterceptor
@@ -20,7 +20,6 @@ import org.matrix.TEESimulator.interception.keystore.InterceptorUtils
 import org.matrix.TEESimulator.interception.keystore.KeyIdentifier
 import org.matrix.TEESimulator.logging.SystemLogger
 import org.matrix.TEESimulator.pki.CertificateGenerator
-import org.matrix.TEESimulator.pki.CertificateHelper
 import org.matrix.TEESimulator.util.AndroidDeviceUtils
 
 /**
@@ -54,7 +53,10 @@ class KeyMintSecurityLevelInterceptor(
             GENERATE_KEY_TRANSACTION -> {
                 logTransaction(txId, transactionNames[code]!!, callingUid, callingPid)
 
-                if (!shouldSkip) return handleGenerateKey(callingUid, data)
+                if (!shouldSkip) {
+                    rewriteGenerateKeyAttestationIds(txId, data)
+                    return TransactionResult.Continue
+                }
             }
             CREATE_OPERATION_TRANSACTION -> {
                 logTransaction(txId, transactionNames[code]!!, callingUid, callingPid)
@@ -142,40 +144,64 @@ class KeyMintSecurityLevelInterceptor(
                     }
                 }
             }
-        } else if (code == GENERATE_KEY_TRANSACTION) {
-            logTransaction(txId, "post-${transactionNames[code]!!}", callingUid, callingPid)
-
-            val metadata: KeyMetadata =
-                reply.readTypedObject(KeyMetadata.CREATOR)
-                    ?: return TransactionResult.SkipTransaction
-            KeyMintAttestation(
-                metadata.authorizations?.map { it.keyParameter }?.toTypedArray() ?: emptyArray()
-            )
-            val originalChain =
-                CertificateHelper.getCertificateChain(metadata)
-                    ?: return TransactionResult.SkipTransaction
-            if (originalChain.size > 1) {
-                val newChain = AttestationPatcher.patchCertificateChain(originalChain, callingUid)
-
-                // Cache the newly patched chain to ensure consistency across subsequent API calls.
-                data.enforceInterface(IKeystoreSecurityLevel.DESCRIPTOR)
-                val keyDescriptor = data.readTypedObject(KeyDescriptor.CREATOR)!!
-                val key = metadata.key!!
-                val keyId = KeyIdentifier(callingUid, keyDescriptor.alias)
-                CertificateHelper.updateCertificateChain(callingUid, metadata, newChain)
-                    .getOrThrow()
-
-                // We must clean up cached generated keys before storing the patched chain
-                cleanupKeyData(keyId)
-                patchedChains[keyId] = newChain
-                SystemLogger.debug(
-                    "Cached patched certificate chain for $keyId. (${key.alias} [${key.domain}, ${key.nspace}])"
-                )
-
-                return InterceptorUtils.createTypedObjectReply(metadata)
-            }
         }
         return TransactionResult.SkipTransaction
+    }
+
+    private fun rewriteGenerateKeyAttestationIds(txId: Long, data: Parcel) {
+        runCatching {
+                data.setDataPosition(0)
+                data.enforceInterface(IKeystoreSecurityLevel.DESCRIPTOR)
+
+                val keyDescriptor = data.readTypedObject(KeyDescriptor.CREATOR)
+                val attestationKey = data.readTypedObject(KeyDescriptor.CREATOR)
+                val params = data.createTypedArray(KeyParameter.CREATOR)
+                val flags = data.readInt()
+                val entropy = data.createByteArray()
+
+                if (keyDescriptor == null || params == null) {
+                    SystemLogger.warning(
+                        "[TX_ID: $txId] Failed to parse generateKey parcel. Forwarding original payload."
+                    )
+                    data.setDataPosition(0)
+                    return
+                }
+
+                val rewrittenCount = rewriteAttestationIdParams(params)
+
+                data.setDataPosition(0)
+                data.writeInterfaceToken(IKeystoreSecurityLevel.DESCRIPTOR)
+                data.writeTypedObject(keyDescriptor, 0)
+                data.writeTypedObject(attestationKey, 0)
+                data.writeTypedArray(params, 0)
+                data.writeInt(flags)
+                data.writeByteArray(entropy)
+                data.setDataSize(data.dataPosition())
+                data.setDataPosition(0)
+
+                if (rewrittenCount > 0) {
+                    SystemLogger.info(
+                        "[TX_ID: $txId] Rewrote $rewrittenCount attestation ID params for ${keyDescriptor.alias}."
+                    )
+                }
+            }
+            .onFailure {
+                SystemLogger.error(
+                    "[TX_ID: $txId] Failed to rewrite generateKey attestation IDs. Forwarding original payload.",
+                    it,
+                )
+                data.setDataPosition(0)
+            }
+    }
+
+    private fun rewriteAttestationIdParams(params: Array<KeyParameter>): Int {
+        var rewritten = 0
+        for (param in params) {
+            val replacement = attestationIdOverrides[param.tag] ?: continue
+            param.value = KeyParameterValue.blob(replacement)
+            rewritten += 1
+        }
+        return rewritten
     }
 
     /**
@@ -347,6 +373,15 @@ class KeyMintSecurityLevelInterceptor(
                 }
                 .associate { field -> (field.get(null) as Int) to field.name.split("_")[1] }
         }
+
+        private val attestationIdOverrides =
+            mapOf(
+                Tag.ATTESTATION_ID_DEVICE to "pudding".toByteArray(StandardCharsets.UTF_8),
+                Tag.ATTESTATION_ID_PRODUCT to "pudding".toByteArray(StandardCharsets.UTF_8),
+                Tag.ATTESTATION_ID_MODEL to "25113PN0EC".toByteArray(StandardCharsets.UTF_8),
+                Tag.ATTESTATION_ID_BRAND to "Xiaomi".toByteArray(StandardCharsets.UTF_8),
+                Tag.ATTESTATION_ID_MANUFACTURER to "Xiaomi".toByteArray(StandardCharsets.UTF_8),
+            )
 
         // Stores keys generated entirely in software.
         val generatedKeys = ConcurrentHashMap<KeyIdentifier, GeneratedKeyInfo>()

@@ -9,7 +9,6 @@ import java.io.File
 import java.util.concurrent.ConcurrentHashMap
 import org.matrix.TEESimulator.attestation.DeviceAttestationService
 import org.matrix.TEESimulator.logging.SystemLogger
-import org.matrix.TEESimulator.pki.KeyBoxManager
 
 /**
  * Manages application configuration, including which packages to process, what operation mode to
@@ -38,7 +37,6 @@ object ConfigurationManager {
 
     // --- In-Memory Configuration State ---
     @Volatile private var packageModes = mapOf<String, Mode>()
-    @Volatile private var packageKeyboxes = mapOf<String, String>()
     @Volatile private var isTeeBroken: Boolean? = null
     @Volatile private var globalCustomPatchLevel: CustomPatchLevel? = null
     @Volatile private var packagePatchLevels = mapOf<String, CustomPatchLevel>()
@@ -83,15 +81,17 @@ object ConfigurationManager {
      * @return The name of the keybox file, or the default if none is specified.
      */
     fun getKeyboxFileForUid(uid: Int): String {
-        val packages = getPackagesForUid(uid)
-        return packages.firstNotNullOfOrNull { pkg -> packageKeyboxes[pkg] } ?: DEFAULT_KEYBOX_FILE
+        return DEFAULT_KEYBOX_FILE
     }
 
-    /** Determines if the certificate for a given UID needs to be patched. */
-    fun shouldPatch(uid: Int): Boolean = getPackageModeForUid(uid) == Mode.PATCH
+    /**
+     * Keybox-based certificate patching is disabled in this profile.
+     * Package filtering is still used by shouldSkipUid() for KeyMint request rewriting.
+     */
+    fun shouldPatch(uid: Int): Boolean = false
 
-    /** Determines if a new certificate needs to be generated for a given UID. */
-    fun shouldGenerate(uid: Int): Boolean = getPackageModeForUid(uid) == Mode.GENERATE
+    /** Software certificate generation is disabled in this profile. */
+    fun shouldGenerate(uid: Int): Boolean = false
 
     /** Determines if no operation is needed for a given UID. */
     fun shouldSkipUid(uid: Int): Boolean = getPackageModeForUid(uid) == null
@@ -142,46 +142,34 @@ object ConfigurationManager {
         }
 
         val newModes = mutableMapOf<String, Mode>()
-        val newKeyboxes = mutableMapOf<String, String>()
-        var currentKeybox = DEFAULT_KEYBOX_FILE
-        val keyboxRegex = Regex("^\\[([a-zA-Z0-9_.-]+\\.xml)]$")
 
         try {
             file.readLines().forEach { line ->
                 val trimmedLine = line.trim()
                 if (trimmedLine.isEmpty() || trimmedLine.startsWith("#")) return@forEach
 
-                // Check if the line defines a new keybox scope.
-                keyboxRegex.find(trimmedLine)?.let {
-                    currentKeybox = it.groupValues[1]
-                    SystemLogger.info("Switching to keybox context: $currentKeybox")
-                    return@forEach
-                }
+                if (trimmedLine.startsWith("[") && trimmedLine.endsWith("]")) return@forEach
 
                 when {
                     // Suffix '!' means force GENERATE mode.
                     trimmedLine.endsWith("!") -> {
                         val pkg = trimmedLine.removeSuffix("!").trim()
                         newModes[pkg] = Mode.GENERATE
-                        newKeyboxes[pkg] = currentKeybox
                     }
                     // Suffix '?' means force PATCH mode.
                     trimmedLine.endsWith("?") -> {
                         val pkg = trimmedLine.removeSuffix("?").trim()
                         newModes[pkg] = Mode.PATCH
-                        newKeyboxes[pkg] = currentKeybox
                     }
                     // No suffix means AUTO mode.
                     else -> {
                         newModes[trimmedLine] = Mode.AUTO
-                        newKeyboxes[trimmedLine] = currentKeybox
                     }
                 }
             }
 
             // Atomically update the configuration maps.
             packageModes = newModes
-            packageKeyboxes = newKeyboxes
             uidToPackagesCache.clear() // Invalidate cache as package settings have changed.
             SystemLogger.info("Successfully loaded ${newModes.size} package configurations.")
         } catch (e: Exception) {
@@ -309,21 +297,7 @@ object ConfigurationManager {
             when (path) {
                 TARGET_PACKAGES_FILE -> loadTargetPackages(file!!)
                 PATCH_LEVEL_FILE -> loadPatchLevelConfig(file!!)
-                // Any change to an XML file is assumed to be a keybox.
-                // The cache in KeyBoxManager will handle reloading it on its next use.
-                else ->
-                    if (path.endsWith(".xml")) {
-                        SystemLogger.info(
-                            "Keybox file $path may have changed. It will be reloaded on next access."
-                        )
-                        KeyBoxManager.invalidateCache(path)
-                        if (Build.VERSION.SDK_INT > Build.VERSION_CODES.R) {
-                            // Clear cached keys possibly containing old certificates
-                            org.matrix.TEESimulator.interception.keystore.shim
-                                .KeyMintSecurityLevelInterceptor
-                                .clearAllGeneratedKeys("updating $file")
-                        }
-                    }
+                else -> Unit
             }
         }
     }
