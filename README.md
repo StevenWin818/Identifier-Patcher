@@ -1,173 +1,41 @@
-# TEESimulator – A Full TEE Emulation Framework
+# Identifier-Patcher
 
-**TEESimulator** is a system module designed to create a complete, software-based simulation of a hardware-backed Trusted Execution Environment ([TEE](https://source.android.com/docs/security/features/trusty)) for [Key Attestation](https://developer.android.com/privacy-and-security/security-key-attestation).
+基于底层 Binder 拦截的 TEE 硬件密钥认证参数重写模块。基于 [TEESimulator](https://www.google.com/search?q=https://github.com/jingmatrix/TEESimulator) 修改而来，原作者: [JingMatrix](https://github.com/JingMatrix)。
 
-The project's goal is to move beyond simple certificate patching and build a robust framework that can create and manage virtual, self-consistent cryptographic keys.
+## 项目简介
 
-## ✨ Core Principles
+Identifier-Patcher 是一个专为 Android 设备设计的 Magisk / KernelSU / APatch 模块。其主要用于解决跨区域刷机（例如基于国行底层硬件运行 EEA 或国际版固件），并[伪装 BitLocker 已锁定状态](https://github.com/StevenWin818/GBL_Root_HyperCanoe)时，由于操作系统属性与底层硬件安全区（RPMB/Fuses）硬编码信息不匹配，导致的硬件支持密钥证明失败（Keystore Error -66: `CANNOT_ATTEST_IDS`）问题。
 
-*   **Bypass Hardware-Backed Attestation:** The primary goal of this project is to defeat Key Attestation, a security mechanism that allows apps to verify that they are running on a secure, unmodified device. This module provides the tools to bypass these checks on rooted or modified devices.
-*   **Stateful Emulation:** Instead of patching responses from the real TEE, the ultimate goal is to create and manage virtual keys entirely in a simulated software environment. Any request concerning a virtual key will be handled by the simulator, ensuring perfect consistency without ever touching the real hardware.
-*   **Architectural Interception:** By hooking low-level Binder IPC calls to the Keystore, the framework can transparently redirect requests for virtual keys to the software-based simulator, while allowing requests for real keys to pass through to the hardware TEE.
-*   **100% FOSS:** Licensed under GPLv3, ensuring it stays free, auditable, and compliant with open-source laws.
+与传统的依赖软件模拟或泄漏 Keybox 的方案不同，本模块作为运行在内核 `/dev/binder` 层级的守护进程，在 Android 框架层与底层物理 TEE（可信执行环境）的通信链路中充当拦截器。它通过动态修改传往 KeyMint / Keymaster HAL 的设备标识参数，强制底层硬件 TEE 签发包含正确物理设备指纹的合法证明证书，从而完美通过 Google 密钥认证（`Key Attestation`）校验。
 
-## 📱 Requirements
-- Android 10 or above
+## 核心特性
 
-## 📦 Installation & Configuration
+* **零 Keybox 依赖**：完全不使用任何第三方泄漏的密钥盒，100% 依赖设备自带的物理硬件私钥进行密码学签名，确保底层信任链的绝对合法性。
+* **纯底层数据包篡改**：深度解析并重写 `IKeystoreSecurityLevel.generateKey` 事务中的 `KeyParameter` 数组，放行重写后的数据包交由真实硬件处理。
+* **隔离进程穿透**：支持全局无条件重写（通过通配符 `*` 配置），有效解决 GMS `unstable` 隔离进程（DroidGuard）因 UID 丢失导致的漏报问题，修复 Google Wallet 等依赖底层令牌化（Tokenization）的安全应用报错。
+* **轻量级与低功耗**：精简了全部软件证书生成与 PKI 逻辑，利用 Native C++ 驱动与 Kotlin 拦截器协同工作，仅对特定的 Keystore 事务进行微秒级的内存覆盖，对系统续航无感知。
 
-1.  Flash this module via (Magisk / KernelSU / APatch) and reboot. It will replace [TrickyStore](https://github.com/5ec1cff/TrickyStore), [TrickyStoreOSS](https://github.com/beakthoven/TrickyStoreOSS) and their forks.
-2.  (Optional) Place a hardware-backed `keybox.xml` at `/data/adb/identifier_patcher/keybox.xml`. This provides the cryptographic "root of trust" for the simulator.
-3.  (Optional) Customize target packages in `/data/adb/identifier_patcher/target.txt`.
-4.  (Optional) Customize the simulated security patch level in `/data/adb/identifier_patcher/security_patch.txt`.
-5.  (Optional) Customize `ATTESTATION_ID_*` overrides in `/data/adb/identifier_patcher/attestation_ids.txt`.
-6.  Enjoy!
+## 配置与使用
 
-**All configuration files are monitored and will take effect immediately upon saving.**
+模块刷入并重启设备后，配置文件位于 `/data/adb/modules/identifier_patcher/` 目录下（具体路径视您的 Root 管理器而定）。
 
-### The `keybox.xml` Root of Trust
+### 1. 目标应用配置 (`target.txt`)
+该文件用于控制模块对哪些发起 Keystore 请求的应用程序生效。
+* 写入 `*`：开启全局拦截。由于 GMS 等系统级安全组件会通过特殊的隔离进程发起请求，指定具体的包名可能导致拦截失效。使用 `*` 可确保所有硬件证明请求均被正确对齐。
+* 写入具体包名（例如 `io.github.vvb2060.keyattestation`）：仅对指定应用生效。
 
-This file provides the master cryptographic identity for the simulator. It contains a private key and a valid, hardware-backed certificate chain from a real device. The simulator uses this to sign the virtual certificates it generates, making them appear legitimate to verifiers.
-
-```xml
-<?xml version="1.0"?>
-<AndroidAttestation>
-    <Keybox DeviceID="...">
-        <Key algorithm="ecdsa|rsa">
-            <PrivateKey format="pem">...</PrivateKey>
-            <CertificateChain>...</CertificateChain>
-        </Key>
-    </Keybox>
-</AndroidAttestation>
-```
-
-### Mode and Keybox Configuration (`target.txt`)
-
-TEESimulator currently operates in two primary modes as it transitions towards full emulation.
-You can control the simulation mode and the specific keybox.xml file used on a per-package basis.
-
-#### Mode Suffixes
-
-*   **`!` → Force Generation Mode:** Creates a complete, software-based virtual key. This is the foundation of the full TEE simulation.
-*   **`?` → Force Leaf Hacking Mode:** A legacy mode where a real TEE key is generated, but its attestation certificate is intercepted and modified.
-*   **No symbol → Automatic Mode:** The module selects the most appropriate mode for the device.
-
-#### Multi-Keybox Configuration
-
-You can specify different keybox files for different groups of applications. This is done by adding a line with the filename in square brackets (e.g., [demo_keybox.xml]).
-
-All applications listed after this line will use the specified keybox file, until a new keybox is declared. Applications listed before any custom keybox declaration will use the default `keybox.xml`.
-
-For example:
-```
-# These two apps will use the default /data/adb/identifier_patcher/keybox.xml
-com.google.android.gms!
-io.github.vvb2060.keyattestation?
-
-# Switch to a different keybox for the following apps.
-# The file must be located at /data/adb/identifier_patcher/aosp_keybox.xml
-[aosp_keybox.xml]
-com.google.android.gsf
-
-# Switch again to another keybox.
-# The file must be located at /data/adb/identifier_patcher/demo_keybox.xml
-[demo_keybox.xml]
-org.matrix.demo
-```
-
-### Security Patch Level (`security_patch.txt`)
-
-This file allows you to configure the `osPatchLevel`, `vendorPatchLevel`, and `bootPatchLevel` that the simulator will report in its patched or forged attestation certificates.
-
-**Note:** This only affects the Key Attestation data generated by the simulator. It does not change the actual system properties of your device.
-
-#### Global and Per-Package Configuration
-
-You can set a global patch level that applies to all applications, and you can also override these settings for specific packages. The syntax is hierarchical:
-
-*   Settings defined at the top of the file, before any `[package.name]` line, are **global** and serve as the default for all apps.
-*   To create a specific configuration for an application, add its package name in square brackets (e.g., `[com.google.android.gms]`). All settings following this line will apply *only* to that package until a new package context is declared.
-
-#### Configuration Keys and Values
-
-You can specify the patch level for the following components using a `key=value` format:
-
-*   `system`: The main OS patch level.
-*   `vendor`: The vendor patch level.
-*   `boot`: The boot/kernel patch level.
-*   `all`: A convenient shorthand to set the same date for `system`, `vendor`, and `boot` simultaneously. Any individual key can still be used to override the value set by `all`.
-
-Dates should be provided in `YYYY-MM-DD` format (e.g., `2025-11-05`).
-
-### Attestation ID Overrides (`attestation_ids.txt`)
-
-This file controls the optional `ATTESTATION_ID_*` overrides applied during attestation rewriting.
-
-Each line uses `KEY=value` format. Leave the value blank to keep that field unchanged. If a value is provided for a field that is not already present in the request, the simulator will insert it.
-
-Supported keys:
-
-*   `ATTESTATION_ID_BRAND`
-*   `ATTESTATION_ID_DEVICE`
-*   `ATTESTATION_ID_PRODUCT`
-*   `ATTESTATION_ID_SERIAL`
-*   `ATTESTATION_ID_IMEI`
-*   `ATTESTATION_ID_MEID`
-*   `ATTESTATION_ID_MANUFACTURER`
-*   `ATTESTATION_ID_MODEL`
-*   `ATTESTATION_ID_SECOND_IMEI`
-
-Example:
-```
-# Leave a line blank to skip that field.
-ATTESTATION_ID_BRAND=Xiaomi
+### 2. 设备标识符配置 (`attestation_ids.txt`)
+该文件用于指定传递给底层物理 TEE 的正确硬件标识符。格式为标准键值对，请务必将其修改为您设备物理主板对应的出厂参数：
+以 小米 17 国行为例，正确的配置如下：
+```properties
 ATTESTATION_ID_DEVICE=pudding
 ATTESTATION_ID_PRODUCT=pudding
 ATTESTATION_ID_MODEL=25113PN0EC
+ATTESTATION_ID_BRAND=Xiaomi
 ATTESTATION_ID_MANUFACTURER=Xiaomi
-ATTESTATION_ID_SERIAL=
-ATTESTATION_ID_IMEI=
-ATTESTATION_ID_MEID=
-ATTESTATION_ID_SECOND_IMEI=
 ```
+## 开源许可与致谢 (License & Acknowledgements)
 
-#### Special Keywords
+本项目基于 [GNU General Public License v3.0 (GPL-3.0)](https://www.gnu.org/licenses/gpl-3.0.en.html) 协议开源。
 
-In addition to static dates, several special keywords provide advanced, dynamic control:
-
-*   **`today`**: Dynamically uses the current date every time an attestation is generated. This ensures the device always appears up-to-date without needing manual edits.
-
-*   **Date Templates**: You can create semi-dynamic dates using `YYYY`, `MM`, and `DD` as placeholders for the current year, month, and day. For example, `YYYY-MM-05` will always resolve to the 5th of the current month and year.
-
-*   **`no`**: This keyword instructs the simulator to **completely omit** the corresponding patch level tag from the generated attestation.
-
-*   **`device_default`**: This keyword forces the simulator to fall back and use the device's **real hardware value** for that specific patch level. This is essential for creating exceptions to a global override or an `all` rule.
-
-#### Example Configuration
-
-This example demonstrates how to combine global settings, per-package overrides, and special keywords for fine-grained control.
-
-```
-# --- Global Configuration ---
-# This is the default for all apps unless specified otherwise.
-# - Forge a recent system patch level, the 5th of the current month (a common patch date).
-# - Use the device's real vendor patch level.
-# - Do not report a boot patch level at all.
-system=YYYY-MM-05
-vendor=device_default
-boot=no
-
-# --- Per-Package Override for Google Play Services ---
-# This app will report an older, specific date for its system patch.
-# It will inherit the global settings for vendor (device_default) and boot (no).
-[com.google.android.gms]
-system=2024-10-01
-
-# --- Per-Package Override for a Demo App ---
-# This app gets a completely custom configuration.
-[org.matrix.demo]
-# Set a base date for all patch levels...
-all=2025-09-15
-# ...but make an exception: use the real boot patch level instead of the one from 'all'.
-boot=device_default
-```
+本项目底层的 Binder 通信拦截框架、C++ 注入逻辑以及核心的基础类结构，派生并修改自开源项目 [TEESimulator](https://www.google.com/search?q=https://github.com/jingmatrix/TEESimulator) (原作者: [JingMatrix](https://github.com/JingMatrix)。在此对原作者及开源社区的卓越贡献表示诚挚的感谢。
