@@ -60,7 +60,7 @@ class KeyMintSecurityLevelInterceptor(
                 } else {
                     val packages = ConfigurationManager.getPackagesForUid(callingUid).joinToString()
                     SystemLogger.debug(
-                        "[TX_ID: $txId] Skip generateKey rewrite for uid=$callingUid packages=[$packages] (not in target.txt)."
+                        "[TX_ID: $txId] Skip generateKey rewrite for uid=$callingUid packages=[$packages] (not matched by target rules)."
                     )
                 }
             }

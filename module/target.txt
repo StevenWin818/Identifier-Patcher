@@ -1,3 +1,19 @@
+# target.txt supports exact package names and wildcard '*' rules only.
+#
+# Rule syntax:
+# 1) Exact match: com.google.android.gms
+# 2) Wildcard prefix: com.android.*
+# 3) Wildcard suffix: *.keyattestation
+# 4) Wildcard contains: *native*
+# 5) Match all packages: *
+#
+# Notes:
+# - One rule per line.
+# - Lines starting with '#' are comments.
+# - Optional mode suffix is still supported:
+#   '!' = GENERATE mode, '?' = PATCH mode, no suffix = AUTO mode.
+# - Regex syntax is not supported in this file.
+
 com.android.vending
 com.google.android.gms
 io.github.vvb2060.keyattestation

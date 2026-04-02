@@ -36,7 +36,7 @@ object ConfigurationManager {
     private val configRoot = File(CONFIG_PATH)
 
     // --- In-Memory Configuration State ---
-    @Volatile private var packageModes = mapOf<String, Mode>()
+    @Volatile private var packageRules = listOf<PackageRule>()
     @Volatile private var isTeeBroken: Boolean? = null
     @Volatile private var globalCustomPatchLevel: CustomPatchLevel? = null
     @Volatile private var packagePatchLevels = mapOf<String, CustomPatchLevel>()
@@ -106,7 +106,7 @@ object ConfigurationManager {
 
         // Find the first configured mode for any of the UID's packages.
         for (pkg in packages) {
-            when (packageModes[pkg]) {
+            when (findModeForPackage(pkg)) {
                 Mode.GENERATE -> return Mode.GENERATE
                 Mode.PATCH -> return Mode.PATCH
                 Mode.AUTO -> return if (isTeeBroken == true) Mode.GENERATE else Mode.PATCH
@@ -141,7 +141,7 @@ object ConfigurationManager {
             return
         }
 
-        val newModes = mutableMapOf<String, Mode>()
+        val newRules = mutableListOf<PackageRule>()
 
         try {
             file.readLines().forEach { line ->
@@ -153,28 +153,95 @@ object ConfigurationManager {
                 when {
                     // Suffix '!' means force GENERATE mode.
                     trimmedLine.endsWith("!") -> {
-                        val pkg = trimmedLine.removeSuffix("!").trim()
-                        newModes[pkg] = Mode.GENERATE
+                        val rule = buildPackageRule(trimmedLine.removeSuffix("!").trim())
+                        if (rule != null) {
+                            newRules += rule.copy(mode = Mode.GENERATE)
+                        }
                     }
                     // Suffix '?' means force PATCH mode.
                     trimmedLine.endsWith("?") -> {
-                        val pkg = trimmedLine.removeSuffix("?").trim()
-                        newModes[pkg] = Mode.PATCH
+                        val rule = buildPackageRule(trimmedLine.removeSuffix("?").trim())
+                        if (rule != null) {
+                            newRules += rule.copy(mode = Mode.PATCH)
+                        }
                     }
                     // No suffix means AUTO mode.
                     else -> {
-                        newModes[trimmedLine] = Mode.AUTO
+                        val rule = buildPackageRule(trimmedLine)
+                        if (rule != null) {
+                            newRules += rule.copy(mode = Mode.AUTO)
+                        }
                     }
                 }
             }
 
             // Atomically update the configuration maps.
-            packageModes = newModes
+            packageRules = newRules
             uidToPackagesCache.clear() // Invalidate cache as package settings have changed.
-            SystemLogger.info("Successfully loaded ${newModes.size} package configurations.")
+            val summaryByType = newRules.groupingBy { it.type }.eachCount()
+            SystemLogger.info(
+                "Successfully loaded ${newRules.size} target rules. typeSummary=$summaryByType"
+            )
         } catch (e: Exception) {
             SystemLogger.error("Failed to load or parse ${file.name}", e)
         }
+    }
+
+    private fun findModeForPackage(packageName: String): Mode? {
+        return packageRules.firstOrNull { rule -> rule.matches(packageName) }?.mode
+    }
+
+    private fun buildPackageRule(patternText: String): PackageRule? {
+        val normalized = patternText.trim()
+        if (normalized.isEmpty()) return null
+
+        if (normalized.startsWith("regex:") || (normalized.startsWith("/") && normalized.endsWith("/"))) {
+            SystemLogger.warning(
+                "Ignore target rule '$normalized': regex syntax is disabled, please use wildcard '*' instead."
+            )
+            return null
+        }
+
+        val type =
+            when {
+                normalized == "*" -> RuleType.ALL
+                normalized.contains('*') -> RuleType.WILDCARD
+                else -> RuleType.EXACT
+            }
+
+        return PackageRule(raw = normalized, mode = Mode.AUTO, type = type)
+    }
+
+    private fun wildcardMatches(pattern: String, text: String): Boolean {
+        if (pattern == "*") return true
+        if (!pattern.contains('*')) return pattern == text
+
+        val parts = pattern.split('*')
+        var index = 0
+
+        if (!pattern.startsWith("*")) {
+            val first = parts.firstOrNull() ?: ""
+            if (!text.startsWith(first)) return false
+            index = first.length
+        }
+
+        val start = if (pattern.startsWith("*")) 0 else 1
+        val endExclusive = if (pattern.endsWith("*")) parts.size else parts.size - 1
+        for (i in start until endExclusive) {
+            val part = parts[i]
+            if (part.isEmpty()) continue
+            val found = text.indexOf(part, index)
+            if (found < 0) return false
+            index = found + part.length
+        }
+
+        if (!pattern.endsWith("*")) {
+            val last = parts.lastOrNull() ?: ""
+            if (last.isNotEmpty()) {
+                return text.endsWith(last) && text.length >= index
+            }
+        }
+        return true
     }
 
     /**
@@ -350,6 +417,26 @@ object ConfigurationManager {
         }
         SystemLogger.error("Failed to get system service after multiple retries: $name")
         return null
+    }
+
+    private enum class RuleType {
+        EXACT,
+        WILDCARD,
+        ALL,
+    }
+
+    private data class PackageRule(
+        val raw: String,
+        val mode: Mode,
+        val type: RuleType,
+    ) {
+        fun matches(packageName: String): Boolean {
+            return when (type) {
+                RuleType.EXACT -> raw == packageName
+                RuleType.WILDCARD -> wildcardMatches(raw, packageName)
+                RuleType.ALL -> true
+            }
+        }
     }
 }
 
