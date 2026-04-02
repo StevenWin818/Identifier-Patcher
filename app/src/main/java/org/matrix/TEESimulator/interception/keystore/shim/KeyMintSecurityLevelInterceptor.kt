@@ -1,6 +1,5 @@
 package org.matrix.TEESimulator.interception.keystore.shim
 
-import android.hardware.security.keymint.KeyOrigin
 import android.hardware.security.keymint.KeyParameter
 import android.hardware.security.keymint.KeyParameterValue
 import android.hardware.security.keymint.SecurityLevel
@@ -10,7 +9,6 @@ import android.os.Parcel
 import android.system.keystore2.*
 import java.nio.charset.StandardCharsets
 import java.security.KeyPair
-import java.security.SecureRandom
 import java.security.cert.Certificate
 import java.util.concurrent.ConcurrentHashMap
 import org.matrix.TEESimulator.attestation.KeyMintAttestation
@@ -19,9 +17,6 @@ import org.matrix.TEESimulator.interception.core.BinderInterceptor
 import org.matrix.TEESimulator.interception.keystore.InterceptorUtils
 import org.matrix.TEESimulator.interception.keystore.KeyIdentifier
 import org.matrix.TEESimulator.logging.SystemLogger
-import org.matrix.TEESimulator.pki.CertificateGenerator
-import org.matrix.TEESimulator.pki.CertificateHelper
-import org.matrix.TEESimulator.util.AndroidDeviceUtils
 
 /**
  * Intercepts calls to an `IKeystoreSecurityLevel` service (e.g., TEE or StrongBox). This is where
@@ -276,109 +271,7 @@ class KeyMintSecurityLevelInterceptor(
         return InterceptorUtils.createTypedObjectReply(response)
     }
 
-    /**
-     * Handles the `generateKey` transaction. Based on the configuration for the calling UID, it
-     * either generates a key in software or lets the call pass through to the hardware.
-     */
-    private fun handleGenerateKey(callingUid: Int, data: Parcel): TransactionResult {
-        return runCatching {
-                data.enforceInterface(IKeystoreSecurityLevel.DESCRIPTOR)
-                val keyDescriptor = data.readTypedObject(KeyDescriptor.CREATOR)!!
-                val attestationKey = data.readTypedObject(KeyDescriptor.CREATOR)
-                SystemLogger.debug(
-                    "Handling generateKey ${keyDescriptor.alias}, attestKey=${attestationKey?.alias}"
-                )
-                val params = data.createTypedArray(KeyParameter.CREATOR)!!
-                val parsedParams = KeyMintAttestation(params)
-                val isAttestKeyRequest = parsedParams.isAttestKey()
-
-                // Determine if we need to generate a key based on config or
-                // if it's an attestation request in patch mode.
-                val needsSoftwareGeneration =
-                    ConfigurationManager.shouldGenerate(callingUid) ||
-                        (ConfigurationManager.shouldPatch(callingUid) && isAttestKeyRequest) ||
-                        (attestationKey != null &&
-                            isAttestationKey(KeyIdentifier(callingUid, attestationKey.alias)))
-
-                if (needsSoftwareGeneration) {
-                    keyDescriptor.nspace = secureRandom.nextLong()
-                    SystemLogger.info(
-                        "Generating software key for ${keyDescriptor.alias}[${keyDescriptor.nspace}]."
-                    )
-
-                    // Generate the key pair and certificate chain.
-                    val keyData =
-                        CertificateGenerator.generateAttestedKeyPair(
-                            callingUid,
-                            keyDescriptor.alias,
-                            attestationKey?.alias,
-                            parsedParams,
-                            securityLevel,
-                        ) ?: throw Exception("CertificateGenerator failed to create key pair.")
-
-                    val keyId = KeyIdentifier(callingUid, keyDescriptor.alias)
-                    // It is unnecessary but a good practice to clean up possible caches
-                    cleanupKeyData(keyId)
-                    // Store the generated key data.
-                    val response =
-                        buildKeyEntryResponse(
-                            callingUid,
-                            keyData.second,
-                            parsedParams,
-                            keyDescriptor,
-                        )
-                    generatedKeys[keyId] =
-                        GeneratedKeyInfo(keyData.first, keyDescriptor.nspace, response)
-                    if (isAttestKeyRequest) attestationKeys.add(keyId)
-
-                    // Return the metadata of our generated key, skipping the real hardware call.
-                    InterceptorUtils.createTypedObjectReply(response.metadata)
-                } else if (parsedParams.attestationChallenge != null) {
-                    TransactionResult.Continue
-                } else {
-                    TransactionResult.ContinueAndSkipPost
-                }
-            }
-            .getOrElse {
-                SystemLogger.error("No key pair generated for UID $callingUid.", it)
-                TransactionResult.ContinueAndSkipPost
-            }
-    }
-
-    /**
-     * Constructs a fake `KeyEntryResponse` that mimics a real response from the Keystore service.
-     */
-    private fun buildKeyEntryResponse(
-        callingUid: Int,
-        chain: List<Certificate>,
-        params: KeyMintAttestation,
-        descriptor: KeyDescriptor,
-    ): KeyEntryResponse {
-        val normalizedKeyDescriptor =
-            KeyDescriptor().apply {
-                domain = Domain.KEY_ID
-                nspace = descriptor.nspace
-                alias = null
-                blob = null
-            }
-        val metadata =
-            KeyMetadata().apply {
-                keySecurityLevel = securityLevel
-                key = normalizedKeyDescriptor
-                authorizations = params.toAuthorizations(callingUid, securityLevel)
-                modificationTimeMs = System.currentTimeMillis()
-            }
-        CertificateHelper.updateCertificateChain(callingUid, metadata, chain.toTypedArray())
-            .getOrThrow()
-        return KeyEntryResponse().apply {
-            this.metadata = metadata
-            iSecurityLevel = original
-        }
-    }
-
     companion object {
-        private val secureRandom = SecureRandom()
-
         // Transaction codes for IKeystoreSecurityLevel interface.
         private val GENERATE_KEY_TRANSACTION =
             InterceptorUtils.getTransactCode(IKeystoreSecurityLevel.Stub::class.java, "generateKey")
@@ -476,95 +369,4 @@ class KeyMintSecurityLevelInterceptor(
             SystemLogger.info("Cleared all cached keys ($count entries)$reasonMessage.")
         }
     }
-}
-
-/**
- * Extension function to convert parsed `KeyMintAttestation` parameters back into an array of
- * `Authorization` objects for the fake `KeyMetadata`.
- */
-private fun KeyMintAttestation.toAuthorizations(
-    callingUid: Int,
-    securityLevel: Int,
-): Array<Authorization> {
-    val authList = mutableListOf<Authorization>()
-
-    /**
-     * Helper function to create a fully-formed Authorization object.
-     *
-     * @param tag The KeyMint tag (e.g., Tag.ALGORITHM).
-     * @param value The value for the tag, wrapped in a KeyParameterValue.
-     * @return A populated Authorization object.
-     */
-    fun createAuth(tag: Int, value: KeyParameterValue, level: Int = securityLevel): Authorization {
-        val param =
-            KeyParameter().apply {
-                this.tag = tag
-                this.value = value
-            }
-        return Authorization().apply {
-            this.keyParameter = param
-            this.securityLevel = level
-        }
-    }
-
-    authList.add(createAuth(Tag.ALGORITHM, KeyParameterValue.algorithm(this.algorithm)))
-
-    if (this.ecCurve != null) {
-        authList.add(createAuth(Tag.EC_CURVE, KeyParameterValue.ecCurve(this.ecCurve)))
-    }
-
-    this.purpose.forEach { authList.add(createAuth(Tag.PURPOSE, KeyParameterValue.keyPurpose(it))) }
-    this.digest.forEach { authList.add(createAuth(Tag.DIGEST, KeyParameterValue.digest(it))) }
-    this.padding.forEach {
-        authList.add(createAuth(Tag.PADDING, KeyParameterValue.paddingMode(it)))
-    }
-
-    authList.add(createAuth(Tag.KEY_SIZE, KeyParameterValue.integer(this.keySize)))
-
-    if (this.rsaPublicExponent != null) {
-        authList.add(
-            createAuth(
-                Tag.RSA_PUBLIC_EXPONENT,
-                KeyParameterValue.longInteger(this.rsaPublicExponent.toLong()),
-            )
-        )
-    }
-
-    if (this.noAuthRequired != null) {
-        authList.add(
-            createAuth(Tag.NO_AUTH_REQUIRED, KeyParameterValue.boolValue(this.noAuthRequired))
-        )
-    }
-
-    authList.add(
-        createAuth(Tag.ORIGIN, KeyParameterValue.origin(this.origin ?: KeyOrigin.GENERATED))
-    )
-
-    authList.add(
-        createAuth(Tag.OS_VERSION, KeyParameterValue.integer(AndroidDeviceUtils.osVersion))
-    )
-
-    val osPatch = AndroidDeviceUtils.getPatchLevel(callingUid)
-    authList.add(createAuth(Tag.OS_PATCHLEVEL, KeyParameterValue.integer(osPatch)))
-
-    val vendorPatch = AndroidDeviceUtils.getVendorPatchLevelLong(callingUid)
-    authList.add(createAuth(Tag.VENDOR_PATCHLEVEL, KeyParameterValue.integer(vendorPatch)))
-
-    val bootPatch = AndroidDeviceUtils.getBootPatchLevelLong(callingUid)
-    authList.add(createAuth(Tag.BOOT_PATCHLEVEL, KeyParameterValue.integer(bootPatch)))
-
-    authList.add(
-        createAuth(Tag.CREATION_DATETIME, KeyParameterValue.dateTime(System.currentTimeMillis()))
-    )
-
-    // AOSP class android.os.UserHandle: PER_USER_RANGE = 100000;
-    authList.add(
-        createAuth(
-            Tag.USER_ID,
-            KeyParameterValue.integer(callingUid / 100000),
-            SecurityLevel.SOFTWARE,
-        )
-    )
-
-    return authList.toTypedArray()
 }

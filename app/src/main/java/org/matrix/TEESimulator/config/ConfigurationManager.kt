@@ -32,6 +32,7 @@ object ConfigurationManager {
     private const val TARGET_PACKAGES_FILE = "target.txt"
     private const val TEE_STATUS_FILE = "tee_status.txt"
     private const val PATCH_LEVEL_FILE = "security_patch.txt"
+    // Compatibility constant for legacy code paths that are currently disabled.
     private const val DEFAULT_KEYBOX_FILE = "keybox.xml"
     private val configRoot = File(CONFIG_PATH)
 
@@ -73,24 +74,15 @@ object ConfigurationManager {
         SystemLogger.info("Configuration initialized and file observer started.")
     }
 
-    /**
-     * Determines the keybox file to be used for a given UID. It maps the UID to its package(s) and
-     * checks for a specific keybox mapping.
-     *
-     * @param uid The calling UID.
-     * @return The name of the keybox file, or the default if none is specified.
-     */
+    /** Compatibility API for disabled legacy keybox pipelines. */
     fun getKeyboxFileForUid(uid: Int): String {
         return DEFAULT_KEYBOX_FILE
     }
 
-    /**
-     * Keybox-based certificate patching is disabled in this profile.
-     * Package filtering is still used by shouldSkipUid() for KeyMint request rewriting.
-     */
+    /** Keybox-based certificate patching is disabled in the active profile. */
     fun shouldPatch(uid: Int): Boolean = false
 
-    /** Software certificate generation is disabled in this profile. */
+    /** Software certificate generation is disabled in the active profile. */
     fun shouldGenerate(uid: Int): Boolean = false
 
     /** Determines if no operation is needed for a given UID. */
@@ -131,10 +123,7 @@ object ConfigurationManager {
         return packageSpecificPatchLevel ?: globalCustomPatchLevel
     }
 
-    /**
-     * Loads and parses the `target.txt` file, which defines the processing mode and keybox file for
-     * each package.
-     */
+    /** Loads and parses `target.txt`, which defines package matching rules and processing mode. */
     private fun loadTargetPackages(file: File) {
         if (!file.exists()) {
             SystemLogger.warning("Configuration file not found: ${file.absolutePath}")
