@@ -1,11 +1,13 @@
 package org.matrix.TEESimulator.config
 
 import android.content.pm.IPackageManager
+import android.hardware.security.keymint.Tag
 import android.os.Build
 import android.os.FileObserver
 import android.os.IBinder
 import android.os.ServiceManager
 import java.io.File
+import java.nio.charset.StandardCharsets
 import java.util.concurrent.ConcurrentHashMap
 import org.matrix.TEESimulator.attestation.DeviceAttestationService
 import org.matrix.TEESimulator.logging.SystemLogger
@@ -28,8 +30,9 @@ object ConfigurationManager {
     }
 
     // --- Configuration Paths ---
-    const val CONFIG_PATH = "/data/adb/modules/identifier_patcher"
+    const val CONFIG_PATH = "/data/adb/identifier_patcher"
     private const val TARGET_PACKAGES_FILE = "target.txt"
+    private const val ATTESTATION_IDS_FILE = "attestation_ids.txt"
     private const val TEE_STATUS_FILE = "tee_status.txt"
     private const val PATCH_LEVEL_FILE = "security_patch.txt"
     private val configRoot = File(CONFIG_PATH)
@@ -39,6 +42,7 @@ object ConfigurationManager {
     @Volatile private var isTeeBroken: Boolean? = null
     @Volatile private var globalCustomPatchLevel: CustomPatchLevel? = null
     @Volatile private var packagePatchLevels = mapOf<String, CustomPatchLevel>()
+    @Volatile private var attestationIdOverrides = mapOf<Int, ByteArray>()
 
     // Cache for UID to package name resolution.
     private val uidToPackagesCache = ConcurrentHashMap<Int, Array<String>>()
@@ -64,6 +68,7 @@ object ConfigurationManager {
 
         // Initial load of all configuration files.
         loadTargetPackages(File(configRoot, TARGET_PACKAGES_FILE))
+        loadAttestationIdOverrides(File(configRoot, ATTESTATION_IDS_FILE))
         loadPatchLevelConfig(File(configRoot, PATCH_LEVEL_FILE))
         storeTeeStatus() // Check and store the current TEE status.
 
@@ -128,6 +133,9 @@ object ConfigurationManager {
         return packageSpecificPatchLevel ?: globalCustomPatchLevel
     }
 
+    /** Returns the configured ATTESTATION_ID_* overrides. Empty values are ignored. */
+    fun getAttestationIdOverrides(): Map<Int, ByteArray> = attestationIdOverrides
+
     /** Loads and parses `target.txt`, which defines package matching rules and processing mode. */
     private fun loadTargetPackages(file: File) {
         if (!file.exists()) {
@@ -178,6 +186,67 @@ object ConfigurationManager {
             )
         } catch (e: Exception) {
             SystemLogger.error("Failed to load or parse ${file.name}", e)
+        }
+    }
+
+    /** Loads and parses `attestation_ids.txt`, which overrides ATTESTATION_ID_* fields. */
+    private fun loadAttestationIdOverrides(file: File) {
+        if (!file.exists()) {
+            attestationIdOverrides = emptyMap()
+            return
+        }
+
+        try {
+            val newOverrides = mutableMapOf<Int, ByteArray>()
+
+            file.readLines().forEach { line ->
+                val trimmedLine = line.trim()
+                if (trimmedLine.isEmpty() || trimmedLine.startsWith("#")) return@forEach
+
+                val parts = trimmedLine.split('=', limit = 2)
+                if (parts.size != 2) {
+                    SystemLogger.warning(
+                        "Ignore malformed attestation override line in ${file.name}: '$trimmedLine'"
+                    )
+                    return@forEach
+                }
+
+                val key = parts[0].trim().uppercase()
+                val value = parts[1].trim()
+                if (value.isEmpty()) return@forEach
+
+                val tag = parseAttestationIdTag(key)
+                if (tag == null) {
+                    SystemLogger.warning(
+                        "Ignore unknown attestation override key '$key' in ${file.name}."
+                    )
+                    return@forEach
+                }
+
+                newOverrides[tag] = value.toByteArray(StandardCharsets.UTF_8)
+            }
+
+            attestationIdOverrides = newOverrides
+            SystemLogger.info(
+                "Loaded ${newOverrides.size} ATTESTATION_ID_* override(s) from ${file.name}."
+            )
+        } catch (e: Exception) {
+            SystemLogger.error("Failed to load or parse ${file.name}", e)
+        }
+    }
+
+    private fun parseAttestationIdTag(name: String): Int? {
+        return when (name) {
+            "ATTESTATION_ID_BRAND" -> Tag.ATTESTATION_ID_BRAND
+            "ATTESTATION_ID_DEVICE" -> Tag.ATTESTATION_ID_DEVICE
+            "ATTESTATION_ID_PRODUCT" -> Tag.ATTESTATION_ID_PRODUCT
+            "ATTESTATION_ID_SERIAL" -> Tag.ATTESTATION_ID_SERIAL
+            "ATTESTATION_ID_IMEI" -> Tag.ATTESTATION_ID_IMEI
+            "ATTESTATION_ID_MEID" -> Tag.ATTESTATION_ID_MEID
+            "ATTESTATION_ID_MANUFACTURER" -> Tag.ATTESTATION_ID_MANUFACTURER
+            "ATTESTATION_ID_MODEL" -> Tag.ATTESTATION_ID_MODEL
+            "ATTESTATION_ID_SECOND_IMEI" -> Tag.ATTESTATION_ID_SECOND_IMEI
+            else -> null
         }
     }
 
@@ -357,6 +426,7 @@ object ConfigurationManager {
             val file = if (event != DELETE) File(configRoot, path) else null
             when (path) {
                 TARGET_PACKAGES_FILE -> loadTargetPackages(file!!)
+                ATTESTATION_IDS_FILE -> loadAttestationIdOverrides(file!!)
                 PATCH_LEVEL_FILE -> loadPatchLevelConfig(file!!)
                 else -> Unit
             }

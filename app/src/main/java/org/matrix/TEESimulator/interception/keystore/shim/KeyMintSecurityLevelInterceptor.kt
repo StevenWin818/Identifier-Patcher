@@ -7,7 +7,6 @@ import android.hardware.security.keymint.Tag
 import android.os.IBinder
 import android.os.Parcel
 import android.system.keystore2.*
-import java.nio.charset.StandardCharsets
 import java.util.concurrent.ConcurrentHashMap
 import org.matrix.TEESimulator.attestation.KeyMintAttestation
 import org.matrix.TEESimulator.config.ConfigurationManager
@@ -185,18 +184,21 @@ class KeyMintSecurityLevelInterceptor(
         params: Array<KeyParameter>
     ): Triple<Array<KeyParameter>, Int, Int> {
         val rewrittenParams = params.toMutableList()
+        val overrides = ConfigurationManager.getAttestationIdOverrides()
+        if (overrides.isEmpty()) return Triple(params, 0, 0)
+
         val existingTags = mutableSetOf<Int>()
         var rewritten = 0
         var inserted = 0
 
         for (param in params) {
             existingTags.add(param.tag)
-            val replacement = attestationIdOverrides[param.tag] ?: continue
+            val replacement = overrides[param.tag] ?: continue
             param.value = KeyParameterValue.blob(replacement)
             rewritten += 1
         }
 
-        for ((tag, replacement) in attestationIdOverrides) {
+        for ((tag, replacement) in overrides) {
             if (existingTags.contains(tag)) continue
 
             rewrittenParams +=
@@ -248,15 +250,6 @@ class KeyMintSecurityLevelInterceptor(
                 }
                 .associate { field -> (field.get(null) as Int) to field.name.split("_")[1] }
         }
-
-        private val attestationIdOverrides =
-            mapOf(
-                Tag.ATTESTATION_ID_DEVICE to "pudding".toByteArray(StandardCharsets.UTF_8),
-                Tag.ATTESTATION_ID_PRODUCT to "pudding".toByteArray(StandardCharsets.UTF_8),
-                Tag.ATTESTATION_ID_MODEL to "25113PN0EC".toByteArray(StandardCharsets.UTF_8),
-                Tag.ATTESTATION_ID_BRAND to "Xiaomi".toByteArray(StandardCharsets.UTF_8),
-                Tag.ATTESTATION_ID_MANUFACTURER to "Xiaomi".toByteArray(StandardCharsets.UTF_8),
-            )
 
         // Stores interceptors for active cryptographic operations.
         private val interceptedOperations = ConcurrentHashMap<IBinder, OperationInterceptor>()

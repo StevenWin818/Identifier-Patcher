@@ -17,10 +17,11 @@ The project's goal is to move beyond simple certificate patching and build a rob
 ## 📦 Installation & Configuration
 
 1.  Flash this module via (Magisk / KernelSU / APatch) and reboot. It will replace [TrickyStore](https://github.com/5ec1cff/TrickyStore), [TrickyStoreOSS](https://github.com/beakthoven/TrickyStoreOSS) and their forks.
-2.  (Optional) Place a hardware-backed `keybox.xml` at `/data/adb/tricky_store/keybox.xml`. This provides the cryptographic "root of trust" for the simulator.
-3.  (Optional) Customize target packages in `/data/adb/tricky_store/target.txt`.
-4.  (Optional) Customize the simulated security patch level in `/data/adb/tricky_store/security_patch.txt`.
-5.  Enjoy!
+2.  (Optional) Place a hardware-backed `keybox.xml` at `/data/adb/identifier_patcher/keybox.xml`. This provides the cryptographic "root of trust" for the simulator.
+3.  (Optional) Customize target packages in `/data/adb/identifier_patcher/target.txt`.
+4.  (Optional) Customize the simulated security patch level in `/data/adb/identifier_patcher/security_patch.txt`.
+5.  (Optional) Customize `ATTESTATION_ID_*` overrides in `/data/adb/identifier_patcher/attestation_ids.txt`.
+6.  Enjoy!
 
 **All configuration files are monitored and will take effect immediately upon saving.**
 
@@ -59,17 +60,17 @@ All applications listed after this line will use the specified keybox file, unti
 
 For example:
 ```
-# These two apps will use the default /data/adb/tricky_store/keybox.xml
+# These two apps will use the default /data/adb/identifier_patcher/keybox.xml
 com.google.android.gms!
 io.github.vvb2060.keyattestation?
 
 # Switch to a different keybox for the following apps.
-# The file must be located at /data/adb/tricky_store/aosp_keybox.xml
+# The file must be located at /data/adb/identifier_patcher/aosp_keybox.xml
 [aosp_keybox.xml]
 com.google.android.gsf
 
 # Switch again to another keybox.
-# The file must be located at /data/adb/tricky_store/demo_keybox.xml
+# The file must be located at /data/adb/identifier_patcher/demo_keybox.xml
 [demo_keybox.xml]
 org.matrix.demo
 ```
@@ -97,6 +98,38 @@ You can specify the patch level for the following components using a `key=value`
 *   `all`: A convenient shorthand to set the same date for `system`, `vendor`, and `boot` simultaneously. Any individual key can still be used to override the value set by `all`.
 
 Dates should be provided in `YYYY-MM-DD` format (e.g., `2025-11-05`).
+
+### Attestation ID Overrides (`attestation_ids.txt`)
+
+This file controls the optional `ATTESTATION_ID_*` overrides applied during attestation rewriting.
+
+Each line uses `KEY=value` format. Leave the value blank to keep that field unchanged. If a value is provided for a field that is not already present in the request, the simulator will insert it.
+
+Supported keys:
+
+*   `ATTESTATION_ID_BRAND`
+*   `ATTESTATION_ID_DEVICE`
+*   `ATTESTATION_ID_PRODUCT`
+*   `ATTESTATION_ID_SERIAL`
+*   `ATTESTATION_ID_IMEI`
+*   `ATTESTATION_ID_MEID`
+*   `ATTESTATION_ID_MANUFACTURER`
+*   `ATTESTATION_ID_MODEL`
+*   `ATTESTATION_ID_SECOND_IMEI`
+
+Example:
+```
+# Leave a line blank to skip that field.
+ATTESTATION_ID_BRAND=Xiaomi
+ATTESTATION_ID_DEVICE=pudding
+ATTESTATION_ID_PRODUCT=pudding
+ATTESTATION_ID_MODEL=25113PN0EC
+ATTESTATION_ID_MANUFACTURER=Xiaomi
+ATTESTATION_ID_SERIAL=
+ATTESTATION_ID_IMEI=
+ATTESTATION_ID_MEID=
+ATTESTATION_ID_SECOND_IMEI=
+```
 
 #### Special Keywords
 

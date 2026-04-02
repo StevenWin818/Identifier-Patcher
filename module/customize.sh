@@ -1,7 +1,7 @@
 # shellcheck disable=SC2034
 SKIPUNZIP=1
 MIN_SDK=29
-CONFIG_DIR=/data/adb/modules/identifier_patcher
+CONFIG_DIR=/data/adb/identifier_patcher
 
 # --- Installation Context Check ---
 if [ "$BOOTMODE" != true ]; then
@@ -81,4 +81,9 @@ fi
 if [ ! -f "$CONFIG_DIR/target.txt" ]; then
   ui_print "- Adding default target scope"
   install_file "target.txt" "$CONFIG_DIR"
+fi
+
+if [ ! -f "$CONFIG_DIR/attestation_ids.txt" ]; then
+  ui_print "- Adding default attestation ID overrides"
+  install_file "attestation_ids.txt" "$CONFIG_DIR"
 fi
