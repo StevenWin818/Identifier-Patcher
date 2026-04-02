@@ -32,8 +32,6 @@ object ConfigurationManager {
     private const val TARGET_PACKAGES_FILE = "target.txt"
     private const val TEE_STATUS_FILE = "tee_status.txt"
     private const val PATCH_LEVEL_FILE = "security_patch.txt"
-    // Compatibility constant for legacy code paths that are currently disabled.
-    private const val DEFAULT_KEYBOX_FILE = "keybox.xml"
     private val configRoot = File(CONFIG_PATH)
 
     // --- In-Memory Configuration State ---
@@ -74,11 +72,6 @@ object ConfigurationManager {
         SystemLogger.info("Configuration initialized and file observer started.")
     }
 
-    /** Compatibility API for disabled legacy keybox pipelines. */
-    fun getKeyboxFileForUid(uid: Int): String {
-        return DEFAULT_KEYBOX_FILE
-    }
-
     /** Keybox-based certificate patching is disabled in the active profile. */
     fun shouldPatch(uid: Int): Boolean = false
 
@@ -90,22 +83,34 @@ object ConfigurationManager {
 
     /** Resolves the operating mode for a given UID based on its packages and the TEE status. */
     private fun getPackageModeForUid(uid: Int): Mode? {
-        val packages = getPackagesForUid(uid)
-        if (packages.isEmpty()) return null
-
         // Lazily load TEE status if it hasn't been checked yet.
         if (isTeeBroken == null) loadTeeStatus()
 
+        // Short-circuit for wildcard all-selection. This must run before package resolution,
+        // because isolated processes may not resolve to package names.
+        if (packageRules.any { it.type == RuleType.ALL }) {
+            return resolveMode(Mode.AUTO)
+        }
+
+        val packages = getPackagesForUid(uid)
+        if (packages.isEmpty()) return null
+
         // Find the first configured mode for any of the UID's packages.
         for (pkg in packages) {
-            when (findModeForPackage(pkg)) {
-                Mode.GENERATE -> return Mode.GENERATE
-                Mode.PATCH -> return Mode.PATCH
-                Mode.AUTO -> return if (isTeeBroken == true) Mode.GENERATE else Mode.PATCH
+            when (val mode = findModeForPackage(pkg)) {
+                Mode.GENERATE, Mode.PATCH, Mode.AUTO -> return resolveMode(mode)
                 null -> continue // No config for this package, check the next one.
             }
         }
         return null // No configuration found for this UID.
+    }
+
+    private fun resolveMode(mode: Mode): Mode {
+        return when (mode) {
+            Mode.AUTO -> if (isTeeBroken == true) Mode.GENERATE else Mode.PATCH
+            Mode.GENERATE -> Mode.GENERATE
+            Mode.PATCH -> Mode.PATCH
+        }
     }
 
     /**

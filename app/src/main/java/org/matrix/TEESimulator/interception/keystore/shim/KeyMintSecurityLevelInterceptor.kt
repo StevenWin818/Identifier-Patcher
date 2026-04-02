@@ -8,14 +8,11 @@ import android.os.IBinder
 import android.os.Parcel
 import android.system.keystore2.*
 import java.nio.charset.StandardCharsets
-import java.security.KeyPair
-import java.security.cert.Certificate
 import java.util.concurrent.ConcurrentHashMap
 import org.matrix.TEESimulator.attestation.KeyMintAttestation
 import org.matrix.TEESimulator.config.ConfigurationManager
 import org.matrix.TEESimulator.interception.core.BinderInterceptor
 import org.matrix.TEESimulator.interception.keystore.InterceptorUtils
-import org.matrix.TEESimulator.interception.keystore.KeyIdentifier
 import org.matrix.TEESimulator.logging.SystemLogger
 
 /**
@@ -26,13 +23,6 @@ class KeyMintSecurityLevelInterceptor(
     private val original: IKeystoreSecurityLevel,
     private val securityLevel: Int,
 ) : BinderInterceptor() {
-
-    // --- Data Structures for State Management ---
-    data class GeneratedKeyInfo(
-        val keyPair: KeyPair,
-        val nspace: Long,
-        val response: KeyEntryResponse,
-    )
 
     override fun onPreTransact(
         txId: Long,
@@ -104,12 +94,6 @@ class KeyMintSecurityLevelInterceptor(
 
         if (code == IMPORT_KEY_TRANSACTION) {
             logTransaction(txId, "post-${transactionNames[code]!!}", callingUid, callingPid)
-
-            data.enforceInterface(IKeystoreSecurityLevel.DESCRIPTOR)
-            val keyDescriptor =
-                data.readTypedObject(KeyDescriptor.CREATOR)
-                    ?: return TransactionResult.SkipTransaction
-            cleanupKeyData(KeyIdentifier(callingUid, keyDescriptor.alias))
         } else if (code == CREATE_OPERATION_TRANSACTION) {
             logTransaction(txId, "post-${transactionNames[code]!!}", callingUid, callingPid)
 
@@ -236,39 +220,10 @@ class KeyMintSecurityLevelInterceptor(
         callingUid: Int,
         data: Parcel,
     ): TransactionResult {
-        data.enforceInterface(IKeystoreSecurityLevel.DESCRIPTOR)
-        val keyDescriptor = data.readTypedObject(KeyDescriptor.CREATOR)!!
-
-        // An operation must use the KEY_ID domain.
-        if (keyDescriptor.domain != Domain.KEY_ID) {
-            return TransactionResult.ContinueAndSkipPost
-        }
-
-        val nspace = keyDescriptor.nspace
-        val generatedKeyInfo = findGeneratedKeyByKeyId(callingUid, nspace)
-
-        if (generatedKeyInfo == null) {
-            SystemLogger.debug(
-                "[TX_ID: $txId] Operation for unknown/hardware KeyId ($nspace). Forwarding."
-            )
-            return TransactionResult.Continue
-        }
-
-        SystemLogger.info("[TX_ID: $txId] Creating SOFTWARE operation for KeyId $nspace.")
-
-        val params = data.createTypedArray(KeyParameter.CREATOR)!!
-        val parsedParams = KeyMintAttestation(params)
-
-        val softwareOperation = SoftwareOperation(txId, generatedKeyInfo.keyPair, parsedParams)
-        val operationBinder = SoftwareOperationBinder(softwareOperation)
-
-        val response =
-            CreateOperationResponse().apply {
-                iOperation = operationBinder
-                operationChallenge = null
-            }
-
-        return InterceptorUtils.createTypedObjectReply(response)
+        SystemLogger.debug(
+            "[TX_ID: $txId] Software createOperation path retired. Forwarding to hardware service (uid=$callingUid)."
+        )
+        return TransactionResult.Continue
     }
 
     companion object {
@@ -303,52 +258,8 @@ class KeyMintSecurityLevelInterceptor(
                 Tag.ATTESTATION_ID_MANUFACTURER to "Xiaomi".toByteArray(StandardCharsets.UTF_8),
             )
 
-        // Stores keys generated entirely in software.
-        val generatedKeys = ConcurrentHashMap<KeyIdentifier, GeneratedKeyInfo>()
-        // A set to quickly identify keys that were generated for attestation purposes.
-        val attestationKeys = ConcurrentHashMap.newKeySet<KeyIdentifier>()
-        // Caches patched certificate chains to prevent re-generation and signature inconsistencies.
-        val patchedChains = ConcurrentHashMap<KeyIdentifier, Array<Certificate>>()
         // Stores interceptors for active cryptographic operations.
         private val interceptedOperations = ConcurrentHashMap<IBinder, OperationInterceptor>()
-
-        // --- Public Accessors for Other Interceptors ---
-        fun getGeneratedKeyResponse(keyId: KeyIdentifier): KeyEntryResponse? =
-            generatedKeys[keyId]?.response
-
-        /**
-         * Finds a software-generated key by first filtering all known keys by the caller's UID, and
-         * then matching the specific nspace.
-         *
-         * @param callingUid The UID of the process that initiated the createOperation call.
-         * @param nspace The unique key identifier from the operation's KeyDescriptor.
-         * @return The matching GeneratedKeyInfo if found, otherwise null.
-         */
-        fun findGeneratedKeyByKeyId(callingUid: Int, nspace: Long?): GeneratedKeyInfo? {
-            // Iterate through all entries in the map to check both the key (for UID) and value (for
-            // nspace).
-            if (nspace == null || nspace == 0L) return null
-            return generatedKeys.entries
-                .filter { (keyIdentifier, _) -> keyIdentifier.uid == callingUid }
-                .find { (_, info) -> info.nspace == nspace }
-                ?.value
-        }
-
-        fun getPatchedChain(keyId: KeyIdentifier): Array<Certificate>? = patchedChains[keyId]
-
-        fun isAttestationKey(keyId: KeyIdentifier): Boolean = attestationKeys.contains(keyId)
-
-        fun cleanupKeyData(keyId: KeyIdentifier) {
-            if (generatedKeys.remove(keyId) != null) {
-                SystemLogger.debug("Remove generated key ${keyId}")
-            }
-            if (patchedChains.remove(keyId) != null) {
-                SystemLogger.debug("Remove patched chain for ${keyId}")
-            }
-            if (attestationKeys.remove(keyId)) {
-                SystemLogger.debug("Remove cached attestaion key ${keyId}")
-            }
-        }
 
         fun removeOperationInterceptor(operationBinder: IBinder, backdoor: IBinder) {
             // Unregister from the native hook layer first.
@@ -357,16 +268,6 @@ class KeyMintSecurityLevelInterceptor(
             if (interceptedOperations.remove(operationBinder) != null) {
                 SystemLogger.debug("Removed operation interceptor for binder: $operationBinder")
             }
-        }
-
-        // Clears all cached keys.
-        fun clearAllGeneratedKeys(reason: String? = null) {
-            val count = generatedKeys.size
-            val reasonMessage = reason?.let { " due to $it" } ?: ""
-            generatedKeys.clear()
-            patchedChains.clear()
-            attestationKeys.clear()
-            SystemLogger.info("Cleared all cached keys ($count entries)$reasonMessage.")
         }
     }
 }
