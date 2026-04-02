@@ -1,7 +1,7 @@
 # shellcheck disable=SC2034
 SKIPUNZIP=1
 MIN_SDK=29
-CONFIG_DIR=/data/adb/tricky_store
+CONFIG_DIR=/data/adb/modules/identifier_patcher
 
 # --- Installation Context Check ---
 if [ "$BOOTMODE" != true ]; then

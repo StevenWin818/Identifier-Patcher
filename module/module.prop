@@ -1,7 +1,7 @@
-id=tricky_store
-name=TEESimulator
+id=identifier_patcher
+name=Identifier_Patcher
 version=${REPLACEMEVER}
 versionCode=${REPLACEMEVERCODE}
-author=JingMatrix
-description=Software simulation for Android hardware-backed key pairs with key attestation
+author=StevenWin818
+description=Modify hardware identifier in Hardware Key Attestation. Based on JingMatrix/TEESimulator.
 updateJson=https://raw.githubusercontent.com/JingMatrix/TEESimulator/main/module/update.json

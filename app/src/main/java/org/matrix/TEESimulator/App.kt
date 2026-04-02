@@ -1,3 +1,9 @@
+/*
+ * Identifier_Patcher - Based on JingMatrix/TEESimulator
+ * https://github.com/JingMatrix/TEESimulator
+ *
+ * Licensed under GPL v3.0
+ */
 package org.matrix.TEESimulator
 
 import android.app.ActivityThread

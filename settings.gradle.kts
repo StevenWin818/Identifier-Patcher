@@ -14,7 +14,7 @@ dependencyResolutionManagement {
     }
 }
 
-rootProject.name = "TEESimulator"
+rootProject.name = "Identifier_Patcher"
 
 include(":stub")
 

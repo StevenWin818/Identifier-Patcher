@@ -1,6 +1,12 @@
 This project is licensed under the GNU General Public License v3.0
 (see LICENSE file).
 
+Base project:
+--------------
+
+This project is based on JingMatrix's TEESimulator:
+https://github.com/JingMatrix/TEESimulator
+
 Source code based on:
 --------------
 

@@ -28,7 +28,7 @@ object ConfigurationManager {
     }
 
     // --- Configuration Paths ---
-    const val CONFIG_PATH = "/data/adb/tricky_store"
+    const val CONFIG_PATH = "/data/adb/modules/identifier_patcher"
     private const val TARGET_PACKAGES_FILE = "target.txt"
     private const val TEE_STATUS_FILE = "tee_status.txt"
     private const val PATCH_LEVEL_FILE = "security_patch.txt"
