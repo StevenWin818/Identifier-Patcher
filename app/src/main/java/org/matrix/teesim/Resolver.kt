@@ -111,12 +111,16 @@ object Resolver {
         val o = JSONObject()
         o.put("id", p.id)
 
-        val keyboxBytes = File(Const.DATA_DIR, p.keybox).readBytes()
-        o.put("keyboxB64", b64.encodeToString(keyboxBytes))
+        val keyboxFile = if (p.keybox.isNotBlank()) File(Const.DATA_DIR, p.keybox) else null
+        if (keyboxFile != null && keyboxFile.isFile) {
+            val keyboxBytes = keyboxFile.readBytes()
+            o.put("keyboxB64", b64.encodeToString(keyboxBytes))
+        } else {
+            o.put("keyboxB64", "")
+        }
 
-        // Operation mode: "patch" re-signs the real hardware attestation, "generation" mints the
-        // whole key in our TA. The router still forces generation for a level whose hardware is
-        // unavailable.
+        // Operation mode: "hardware" (zero-keybox hardware TEE ID override), "patch" re-signs the real
+        // hardware attestation with keybox, "generation" mints whole key in software TA.
         o.put("mode", p.mode)
 
         // Security level is not a profile choice: it is the device's real harvested level, except
@@ -157,16 +161,30 @@ object Resolver {
         // baseline — the real captured id, else the value read from the OS at harvest
         // (serial/imei/meid, and brand/device/product/manufacturer/model when the leaf carried
         // none), exposed via effective(). Omitted when neither is set (declines that id).
+        // For hardware mode: only send the explicitly specified overrides so we don't accidentally
+        // inject privileged tags (e.g. imei/serial) that the app never asked for.
         val ids = JSONObject()
-        putId(ids, "brand", p.brand, harvest.effective("brand"))
-        putId(ids, "device", p.device, harvest.effective("device"))
-        putId(ids, "product", p.product, harvest.effective("product"))
-        putId(ids, "serial", p.serial, harvest.effective("serial"))
-        putId(ids, "imei", p.imei, harvest.effective("imei"))
-        putId(ids, "imei2", p.imei2, harvest.effective("imei2"))
-        putId(ids, "meid", p.meid, harvest.effective("meid"))
-        putId(ids, "manufacturer", p.manufacturer, harvest.effective("manufacturer"))
-        putId(ids, "model", p.model, harvest.effective("model"))
+        if (p.mode == "hardware") {
+            if (p.brand.isNotBlank()) ids.put("brand", p.brand)
+            if (p.device.isNotBlank()) ids.put("device", p.device)
+            if (p.product.isNotBlank()) ids.put("product", p.product)
+            if (p.serial.isNotBlank()) ids.put("serial", p.serial)
+            if (p.imei.isNotBlank()) ids.put("imei", p.imei)
+            if (p.imei2.isNotBlank()) ids.put("imei2", p.imei2)
+            if (p.meid.isNotBlank()) ids.put("meid", p.meid)
+            if (p.manufacturer.isNotBlank()) ids.put("manufacturer", p.manufacturer)
+            if (p.model.isNotBlank()) ids.put("model", p.model)
+        } else {
+            putId(ids, "brand", p.brand, harvest.effective("brand"))
+            putId(ids, "device", p.device, harvest.effective("device"))
+            putId(ids, "product", p.product, harvest.effective("product"))
+            putId(ids, "serial", p.serial, harvest.effective("serial"))
+            putId(ids, "imei", p.imei, harvest.effective("imei"))
+            putId(ids, "imei2", p.imei2, harvest.effective("imei2"))
+            putId(ids, "meid", p.meid, harvest.effective("meid"))
+            putId(ids, "manufacturer", p.manufacturer, harvest.effective("manufacturer"))
+            putId(ids, "model", p.model, harvest.effective("model"))
+        }
         if (ids.length() > 0) o.put("deviceIds", ids)
 
         // packages[] (attestation name-match, verbatim incl. not-yet-installed) and uids[]

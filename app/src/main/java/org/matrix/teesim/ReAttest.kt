@@ -93,9 +93,11 @@ object ReAttest {
         if (keys.isEmpty()) return
 
         var done = 0
+        val profileById = config.profiles.associateBy { it.id }
         val dbFallback = ArrayList<KeystoreDb.CertUpdate>()
         for (key in keys) {
             val profileId = uidToProfile[key.uid] ?: continue
+            if (profileById[profileId]?.mode == "hardware") continue
             val chain =
                 Control.resign(profileId, key.leaf)
                     ?: run {

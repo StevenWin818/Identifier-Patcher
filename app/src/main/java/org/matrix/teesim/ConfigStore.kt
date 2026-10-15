@@ -83,18 +83,23 @@ object ConfigStore {
             val id = ids.next()
             val p = profilesObj.getJSONObject(id)
 
-            val keybox = p.optString("keybox", "").trim()
-            if (keybox.isEmpty()) throw ConfigException("profile '$id' has no keybox")
-            val keyboxFile = File(Const.DATA_DIR, keybox)
-            if (!keyboxFile.isFile)
-                throw ConfigException("profile '$id' keybox not found: ${keyboxFile.absolutePath}")
+            // Operation mode: hardware (real hardware TEE with ATTESTATION_ID_* overrides, zero keybox),
+            // patch (re-sign the real hardware attestation with keybox), or generation (mint whole key in software TA).
+            val mode = p.optString("mode", "hardware").trim().lowercase()
+            if (mode != "hardware" && mode != "patch" && mode != "generation")
+                throw ConfigException("profile '$id' has invalid mode '$mode' (hardware | patch | generation)")
 
-            // Operation mode: patch (re-sign the real hardware attestation) or generation (mint the
-            // whole key). Defaults to patch; a level whose hardware is unavailable still falls back
-            // to generation at resolve time.
-            val mode = p.optString("mode", "patch").trim().lowercase()
-            if (mode != "patch" && mode != "generation")
-                throw ConfigException("profile '$id' has invalid mode '$mode' (patch | generation)")
+            val keybox = p.optString("keybox", "").trim()
+            if (mode != "hardware") {
+                if (keybox.isEmpty()) throw ConfigException("profile '$id' has no keybox")
+                val keyboxFile = File(Const.DATA_DIR, keybox)
+                if (!keyboxFile.isFile)
+                    throw ConfigException("profile '$id' keybox not found: ${keyboxFile.absolutePath}")
+            } else if (keybox.isNotEmpty()) {
+                val keyboxFile = File(Const.DATA_DIR, keybox)
+                if (!keyboxFile.isFile)
+                    throw ConfigException("profile '$id' keybox not found: ${keyboxFile.absolutePath}")
+            }
 
             val patch = p.optJSONObject("patchLevel") ?: JSONObject()
             val apps =
