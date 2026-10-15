@@ -155,6 +155,32 @@ elseif(ANDROID_ABI STREQUAL "x86")
 endif()
 
 set(RUST_A ${CMAKE_SOURCE_DIR}/rust/target/${RUST_TRIPLE}/release/libteesim_km.a)
+if(CMAKE_HOST_WIN32)
+  set(_bash_hints "")
+  find_program(GIT_EXECUTABLE git)
+  if(GIT_EXECUTABLE)
+    get_filename_component(_git_dir "${GIT_EXECUTABLE}" DIRECTORY)
+    get_filename_component(_git_root "${_git_dir}" DIRECTORY)
+    list(APPEND _bash_hints "${_git_root}/bin" "${_git_root}/usr/bin")
+  endif()
+  list(APPEND _bash_hints
+      "C:/Program Files/Git/bin"
+      "C:/Program Files/Git/usr/bin"
+      "C:/Program Files (x86)/Git/bin"
+      "C:/Program Files (x86)/Git/usr/bin")
+  find_program(BASH_BIN bash
+      HINTS ${_bash_hints}
+      NO_SYSTEM_ENVIRONMENT_PATH)
+  if(NOT BASH_BIN)
+    find_program(BASH_BIN bash)
+  endif()
+else()
+  find_program(BASH_BIN bash)
+endif()
+if(NOT BASH_BIN)
+  set(BASH_BIN bash)
+endif()
+
 # ALWAYS invoke build.sh and let cargo decide incrementally what to rebuild. An OUTPUT custom command
 # with no source DEPENDS only runs when the .a is missing, so once built it was never refreshed on a
 # Rust source change — that once linked a stale 14-argument teesim_km_init_ex against a 16-argument C++
@@ -165,7 +191,7 @@ add_custom_target(rust_ta
     COMMAND ${CMAKE_COMMAND} -E env
             ABI=${ANDROID_ABI} API=${ANDROID_API_LEVEL} NDK_HOME=${ANDROID_NDK}
             BORINGSSL=${BORINGSSL_DIR}
-            bash ${CMAKE_SOURCE_DIR}/rust/build.sh
+            ${BASH_BIN} ${CMAKE_SOURCE_DIR}/rust/build.sh
     VERBATIM USES_TERMINAL)
 
 # --- How the TAs reach BoringSSL --------------------------------------------

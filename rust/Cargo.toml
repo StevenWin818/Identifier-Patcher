@@ -13,6 +13,7 @@ kmr-derive = { path = "../third_party/keymint/derive" }
 kmr-wire = { path = "../third_party/keymint/wire" }
 kmr-ta = { path = "../third_party/keymint/ta" }
 kmr-crypto-boring = { path = "../third_party/keymint/boringssl" }
+openssl-sys = { path = "openssl-sys" }
 
 [profile.release]
 panic = "unwind"
