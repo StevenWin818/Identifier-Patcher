@@ -87,12 +87,22 @@ set(AIDL_GEN ${CMAKE_BINARY_DIR}/aidl-gen)
 
 if(NOT EXISTS ${AIDL_GEN}/.done)
   file(MAKE_DIRECTORY ${AIDL_GEN}/src ${AIDL_GEN}/include)
+  file(TO_NATIVE_PATH "${KM_AIDL}" KM_AIDL_NATIVE)
+  file(TO_NATIVE_PATH "${SC_AIDL}" SC_AIDL_NATIVE)
+  file(TO_NATIVE_PATH "${SS_AIDL}" SS_AIDL_NATIVE)
+  file(TO_NATIVE_PATH "${AIDL_GEN}/src" AIDL_GEN_SRC_NATIVE)
+  file(TO_NATIVE_PATH "${AIDL_GEN}/include" AIDL_GEN_INC_NATIVE)
   foreach(pkg keymint secureclock sharedsecret)
     file(GLOB _aidls ${SEC}/${pkg}/aidl/android/hardware/security/${pkg}/*.aidl)
+    set(_aidls_native)
+    foreach(_aidl ${_aidls})
+      file(TO_NATIVE_PATH "${_aidl}" _aidl_native)
+      list(APPEND _aidls_native "${_aidl_native}")
+    endforeach()
     execute_process(
       COMMAND ${AIDL_BIN} --lang=ndk --structured --stability=vintf --min_sdk_version=29
-              -I ${KM_AIDL} -I ${SC_AIDL} -I ${SS_AIDL}
-              -o ${AIDL_GEN}/src -h ${AIDL_GEN}/include ${_aidls}
+              -I ${KM_AIDL_NATIVE} -I ${SC_AIDL_NATIVE} -I ${SS_AIDL_NATIVE}
+              -o ${AIDL_GEN_SRC_NATIVE} -h ${AIDL_GEN_INC_NATIVE} ${_aidls_native}
       RESULT_VARIABLE _rc)
     if(NOT _rc EQUAL 0)
       message(FATAL_ERROR "aidl generation failed for ${pkg}")

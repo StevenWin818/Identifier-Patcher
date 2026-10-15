@@ -11,3 +11,4 @@ compile_commands.json
 /app/build/
 /stub/build/
 local.properties
+.vscode/
