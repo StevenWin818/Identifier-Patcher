@@ -38,4 +38,4 @@ ATTESTATION_ID_MANUFACTURER=Xiaomi
 
 本项目基于 [GNU General Public License v3.0 (GPL-3.0)](https://www.gnu.org/licenses/gpl-3.0.en.html) 协议开源。
 
-本项目底层的 Binder 通信拦截框架、C++ 注入逻辑以及核心的基础类结构，派生并修改自开源项目 [TEESimulator](https://www.google.com/search?q=https://github.com/jingmatrix/TEESimulator) (原作者: [JingMatrix](https://github.com/JingMatrix)。在此对原作者及开源社区的卓越贡献表示诚挚的感谢。
+本项目底层的 Binder 通信拦截框架、C++ 注入逻辑以及核心的基础类结构，派生并修改自开源项目 [TEESimulator](https://www.google.com/search?q=https://github.com/jingmatrix/TEESimulator) (原作者: [JingMatrix](https://github.com/JingMatrix))。在此对原作者及开源社区的卓越贡献表示诚挚的感谢。
