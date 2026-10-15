@@ -122,15 +122,15 @@ function keyboxWidget(d, value, onChange, ctx) {
   // a keybox we can't see right now still shows (flagged) rather than vanishing.
   const files = (ctx.keyboxFiles || []).slice();
   if (value && !files.includes(value)) files.push(value);
-  if (files.length === 0) {
-    return el("select", { id: ctx.id, class: "input", disabled: true },
-      [el("option", { text: "no keybox files found" })]);
-  }
+  const options = [
+    el("option", { value: "", selected: !value, text: "(None - Hardware Mode)" }),
+    ...files.map((f) =>
+      el("option", { value: f, selected: f === value, text: f + ((ctx.keyboxFiles || []).includes(f) ? "" : " (missing)") }))
+  ];
   return el("select", {
     id: ctx.id, class: "input",
     onchange: (e) => onChange(d.path, e.target.value),
-  }, files.map((f) =>
-    el("option", { value: f, selected: f === value, text: f + ((ctx.keyboxFiles || []).includes(f) ? "" : " (missing)") })));
+  }, options);
 }
 
 function applistWidget(d, value, ctx) {

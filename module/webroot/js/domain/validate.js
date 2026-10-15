@@ -44,8 +44,13 @@ export function validateProfile(name, profile) {
     }
 
     if (f.key === "keybox") {
-      if (!value || !KEYBOX_RE.test(value)) {
-        errors.push({ field: f.key, msg: "A keybox ending in .xml is required." });
+      const mode = (profile && profile.mode) || "hardware";
+      if (mode !== "hardware") {
+        if (!value || !KEYBOX_RE.test(value)) {
+          errors.push({ field: f.key, msg: "A keybox ending in .xml is required for patch and generation modes." });
+        }
+      } else if (value && !KEYBOX_RE.test(value)) {
+        errors.push({ field: f.key, msg: "Keybox filename must end in .xml." });
       }
       continue;
     }

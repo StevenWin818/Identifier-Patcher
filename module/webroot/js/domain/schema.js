@@ -58,7 +58,7 @@ export const PATCH_RE = /^(today|no|harvested|system_property|(\d{4}|YYYY)-(0[1-
 // harvested | system_property | "16" | "16.0.0" | packed integer like "160000"
 export const OSVER_RE = /^(harvested|system_property|\d+(\.\d+){0,2})$/;
 // Per-profile operation mode.
-export const MODE_RE = /^(patch|generation)$/;
+export const MODE_RE = /^(hardware|patch|generation)$/;
 
 // Field descriptors, in render order. Each one is:
 //   key      unique id, also the inline-error key
@@ -77,17 +77,16 @@ export const FIELDS = [
   // --- attestation record -------------------------------------------------
   {
     key: "keybox", path: ["keybox"], label: "Keybox", group: "attestation",
-    type: "keybox", re: KEYBOX_RE, required: true, default: "keybox.xml",
-    help: "An *.xml keybox under /data/adb/teesim to sign attestations with.",
+    type: "keybox", re: KEYBOX_RE, required: false, default: "",
+    help: "An *.xml keybox under /data/adb/teesim to sign attestations with (optional for hardware mode).",
   },
   {
     key: "mode", path: ["mode"], label: "Operation mode", group: "attestation",
-    type: "select", options: ["patch", "generation"], required: true, default: "patch",
+    type: "select", options: ["hardware", "patch", "generation"], required: true, default: "hardware",
     re: MODE_RE,
     help:
-      "patch: keep the real hardware key and re-sign only its attestation with the keybox " +
-      "(fewer detection points; needs a working hardware level). generation: mint the whole key " +
-      "in software. A level whose hardware is unavailable always falls back to generation.",
+      "hardware: Zero-Keybox mode. Uses the device's real hardware TEE to generate and attest keys with custom ATTESTATION_ID_* parameters. " +
+      "patch: Keep hardware key and re-sign leaf with keybox. generation: Mint whole key in software TA.",
   },
   // --- patch & OS levels (folded away in the editor to keep it concise). Empty means
   //     "use the harvested value" — so these are optional, not required. ---

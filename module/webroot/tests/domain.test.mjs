@@ -62,12 +62,21 @@ test("a profile with zero apps is rejected", () => {
   assert.ok(r.errors.some((e) => e.profile === "p" && e.field === "apps"));
 });
 
-test("a profile missing its keybox is rejected", () => {
+test("a profile missing its keybox in patch mode is rejected", () => {
   const p = validProfile();
+  p.mode = "patch";
   p.keybox = "";
   const r = validateConfig(configWith({ p }));
   assert.equal(r.ok, false);
   assert.ok(r.errors.some((e) => e.profile === "p" && e.field === "keybox"));
+});
+
+test("a hardware mode profile without keybox is accepted", () => {
+  const p = validProfile();
+  p.mode = "hardware";
+  p.keybox = "";
+  const r = validateConfig(configWith({ p }));
+  assert.equal(r.ok, true);
 });
 
 test("a bad package name is rejected", () => {
@@ -222,7 +231,7 @@ const cases = [
   [KEYBOX_RE, ["keybox.xml", "a-b_c.1.xml"], ["keybox", "keybox.XML", "../x.xml", "a b.xml", "keybox.xml.bak"]],
   [PATCH_RE, ["today", "no", "harvested", "system_property", "2024-01", "2024-12", "2024-01-15", "2024-12-31", "YYYY-MM", "YYYY-MM-05", "YYYY-MM-DD"], ["2024", "2024-1", "2024-1-1", "yesterday", "", "2024-00", "2024-13", "2024-01-00", "2024-01-32", "2024-13-01", "MM-05", "YYYY-13-01"]],
   [OSVER_RE, ["harvested", "system_property", "16", "16.0", "16.0.0", "160000"], ["16.0.0.0", "v16", "", "16."]],
-  [MODE_RE, ["patch", "generation"], ["", "Patch", "GENERATION", "patched", "gen", "auto"]],
+  [MODE_RE, ["hardware", "patch", "generation"], ["", "Patch", "GENERATION", "patched", "gen", "auto", "hw"]],
 ];
 for (const [re, good, bad] of cases) {
   test(`regex ${re} accepts its allowed set`, () => {
