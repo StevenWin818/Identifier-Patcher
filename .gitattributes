@@ -1,0 +1,22 @@
+# Set default behavior to automatically normalize line endings
+* text=auto
+
+# Enforce LF for shell scripts and Android module configurations
+*.sh text eol=lf
+daemon text eol=lf
+*.rule text eol=lf
+*.prop text eol=lf
+*.json text eol=lf
+*.js text eol=lf
+*.mjs text eol=lf
+*.html text eol=lf
+*.css text eol=lf
+*.aidl text eol=lf
+*.cpp text eol=lf
+*.h text eol=lf
+*.c text eol=lf
+*.rs text eol=lf
+*.kt text eol=lf
+*.kts text eol=lf
+*.md text eol=lf
+

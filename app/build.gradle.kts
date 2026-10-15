@@ -287,6 +287,20 @@ androidComponents {
                 }
 
                 into(tempModuleDir)
+
+                doLast {
+                    // Ensure all scripts and text configurations packaged into the module zip
+                    // use Unix LF line endings, preventing syntax errors when flashed on Android.
+                    val textExtensions = setOf("sh", "prop", "rule", "json", "js", "mjs", "html", "css", "md")
+                    tempModuleDir.get().asFile.walk().filter { it.isFile }.forEach { file ->
+                        if (file.extension in textExtensions || file.name == "daemon") {
+                            val text = file.readText()
+                            if (text.contains("\r\n")) {
+                                file.writeText(text.replace("\r\n", "\n"))
+                            }
+                        }
+                    }
+                }
             }
 
         // Zip the staged module into out/.
