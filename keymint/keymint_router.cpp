@@ -75,6 +75,8 @@ struct Profile {
   // auto-included one. Only used to name the caller in the log — routing never reads it.
   std::vector<std::string> uid_names;
   bool patch_mode = false;
+  bool hardware_mode = false;
+  std::vector<KeyParameter> id_params;
 
   // The TA that serves requests arriving at `level`. Software-level KeyMint is never wrapped, so any
   // non-StrongBox level maps to the TrustedEnvironment instance.
@@ -181,9 +183,12 @@ struct ForwardGuard {
 struct RequestTarget {
   TaPtr ta;
   bool patch_mode = false;
+  bool hardware_mode = false;
   // The profile's id, for the log: on a device with more than one profile it says which keybox
   // signed a chain.
   std::string id;
+  std::vector<KeyParameter> id_params;
+  bool matched = false;
 };
 
 RequestTarget ProfileForRequest(const std::vector<KeyParameter>& params, uid_t caller_uid,
@@ -214,7 +219,7 @@ RequestTarget ProfileForRequest(const std::vector<KeyParameter>& params, uid_t c
                pkg.name.c_str(), prof.id.c_str(), pkg.user_id, caller_user);
           continue;
         }
-        return {prof.TaFor(level), prof.patch_mode, prof.id};
+        return {prof.TaFor(level), prof.patch_mode, prof.hardware_mode, prof.id, prof.id_params, true};
       }
     }
   }
@@ -224,11 +229,33 @@ RequestTarget ProfileForRequest(const std::vector<KeyParameter>& params, uid_t c
   if (caller_uid != static_cast<uid_t>(-1)) {
     for (const auto& prof : g_profiles) {
       for (int32_t uid : prof.uids) {
-        if (static_cast<uid_t>(uid) == caller_uid) return {prof.TaFor(level), prof.patch_mode, prof.id};
+        if (static_cast<uid_t>(uid) == caller_uid) {
+          return {prof.TaFor(level), prof.patch_mode, prof.hardware_mode, prof.id, prof.id_params, true};
+        }
       }
     }
   }
   return {};
+}
+
+// Override or insert ATTESTATION_ID_* parameters into `params` from `overrides`.
+void ApplyIdOverrides(std::vector<KeyParameter>& params, const std::vector<KeyParameter>& overrides) {
+  if (overrides.empty()) return;
+  std::set<Tag> existingTags;
+  for (auto& p : params) {
+    existingTags.insert(p.tag);
+    for (const auto& o : overrides) {
+      if (p.tag == o.tag) {
+        p.value = o.value;
+        break;
+      }
+    }
+  }
+  for (const auto& o : overrides) {
+    if (existingTags.find(o.tag) == existingTags.end()) {
+      params.push_back(o);
+    }
+  }
 }
 
 // The log prefix naming the request a hooked call is serving: "[10316 com.snapchat.android r3c81] ",
@@ -963,11 +990,13 @@ class TeesimKeyMintDevice : public BnKeyMintDevice {
     // Only a target app's own call earns INFO: every OTHER app on the device calling generateKey
     // (the overwhelming majority of calls this router ever sees) is not our concern, and at INFO its
     // parameters would drown the target-app lines this exists for.
-    if (t.ta) {
-      LOGI("generateKey: level=%s, profile=%s, %s, caller_attest_key=%d, patch_mode=%d, "
+    if (t.matched) {
+      LOGI("generateKey: level=%s, profile=%s, %s, caller_attest_key=%d, mode=%s, "
            "strongbox_ok=%d, rkp_gate=%s",
            LevelName(level_), t.id.empty() ? "-" : t.id.c_str(), KeyShape(keyParams).c_str(),
-           attestationKey.has_value(), t.patch_mode, g_strongbox_ok, rkp_gate);
+           attestationKey.has_value(),
+           t.hardware_mode ? "hardware" : (t.patch_mode ? "patch" : "generation"),
+           g_strongbox_ok, rkp_gate);
       LOGI("generateKey: params=%s", ParamsDesc(keyParams).c_str());
     } else {
       LOGD("generateKey: level=%s, %s, caller_attest_key=%d, not a target, rkp_gate=%s",
@@ -986,7 +1015,7 @@ class TeesimKeyMintDevice : public BnKeyMintDevice {
            ours ? "ours: its leaves stay keybox-rooted"
                 : "foreign: we hold no private half, so this leaf keeps the REAL root of trust");
     }
-    if (!t.ta) {
+    if (!t.matched) {
       if (real_) {
         LOGD("generateKey: forwarding to real HAL (not a target)");
         ForwardGuard g;
@@ -995,6 +1024,28 @@ class TeesimKeyMintDevice : public BnKeyMintDevice {
         return st;
       }
       return NoRealHal(__func__);
+    }
+
+    // Hardware mode (Zero-Keybox): forward directly to real HAL with rewritten ATTESTATION_ID_* parameters.
+    if (t.hardware_mode) {
+      if (!real_) return NoRealHal(__func__);
+
+      std::vector<KeyParameter> rewrittenParams = keyParams;
+      ApplyIdOverrides(rewrittenParams, t.id_params);
+
+      LOGI("generateKey[hardware]: forwarding to real HAL with rewritten ATTESTATION_IDs for profile '%s' "
+           "(params: %zu -> %zu, overrides: %zu)",
+           t.id.c_str(), keyParams.size(), rewrittenParams.size(), t.id_params.size());
+
+      ForwardGuard g;
+      auto st = real_->generateKey(rewrittenParams, attestationKey, out);
+      if (!st.isOk()) {
+        LOGW("generateKey[hardware]: real HAL generateKey failed (%s)", StatusDesc(st).c_str());
+      } else {
+        LOGI("generateKey[hardware]: emitted %zu-cert chain (pure hardware TEE backed) key=%s blob_len=%zu",
+             out->certificateChain.size(), BlobTag(out->keyBlob).c_str(), out->keyBlob.size());
+      }
+      return st;
     }
     // A target's symmetric key is forwarded, not simulated (see IsAsymmetricKeyRequest). An attest
     // key is always asymmetric, so this never diverts one.
@@ -1080,12 +1131,12 @@ class TeesimKeyMintDevice : public BnKeyMintDevice {
     TaPtr ta = t.ta;
     // importKey creates a key exactly as generateKey does, so it is logged the same way: only a
     // target's own call earns INFO; every other app importing a key of its own is not our concern.
-    if (ta) {
+    if (t.matched) {
       LOGI("importKey: level=%s, profile=%s, %s, format=%s, key_data_len=%zu, "
-           "caller_attest_key=%d, patch_mode=%d",
+           "caller_attest_key=%d, mode=%s",
            LevelName(level_), t.id.empty() ? "-" : t.id.c_str(), KeyShape(keyParams).c_str(),
            toString(keyFormat).c_str(), keyData.size(), attestationKey.has_value(),
-           t.patch_mode);
+           t.hardware_mode ? "hardware" : (t.patch_mode ? "patch" : "generation"));
       LOGI("importKey: params=%s", ParamsDesc(keyParams).c_str());
     } else {
       LOGD("importKey: level=%s, %s, format=%s, key_data_len=%zu, not a target",
@@ -1093,7 +1144,7 @@ class TeesimKeyMintDevice : public BnKeyMintDevice {
            keyData.size());
       LOGD("importKey: params=%s", ParamsDesc(keyParams).c_str());
     }
-    if (!ta) {
+    if (!t.matched) {
       if (real_) {
         LOGD("importKey: forwarding to real HAL (not a target)");
         ForwardGuard g;
@@ -1102,6 +1153,14 @@ class TeesimKeyMintDevice : public BnKeyMintDevice {
         return st;
       }
       return NoRealHal(__func__);
+    }
+    if (t.hardware_mode) {
+      if (!real_) return NoRealHal(__func__);
+      std::vector<KeyParameter> rewrittenParams = keyParams;
+      ApplyIdOverrides(rewrittenParams, t.id_params);
+      LOGI("importKey[hardware]: forwarding to real HAL with rewritten ATTESTATION_IDs");
+      ForwardGuard g;
+      return real_->importKey(rewrittenParams, keyFormat, keyData, attestationKey, out);
     }
     // As in generateKey, a symmetric key is forwarded rather than simulated.
     if (!IsAsymmetricKeyRequest(keyParams)) {
@@ -1581,36 +1640,56 @@ extern "C" void teesim_cfg_begin(const TsBootInfo* boot) {
 }
 
 extern "C" bool teesim_cfg_add_profile(const TsProfile* p) {
-  // A real device runs a separate KeyMint instance per security level; we mirror that with one fixed-
-  // level TA per level. Both are built from the same keybox and boot state, so their key-encryption
-  // keys match and any of our blobs decrypts under either — but each stamps its own level into the
-  // keys it mints, so operations read a key's characteristics at the level it was minted at with no
-  // per-request override. `p->security_level` is retained only for the staged-profile log line.
-  auto buildTa = [&](int32_t level) -> ::Ta* {
-    return teesim_km_init_ex(p->keybox, p->keybox_len, level, p->os_version, p->os_patchlevel,
-                             p->vendor_patchlevel, p->boot_patchlevel, g_stage_vb_key.data(),
-                             g_stage_vb_key.size(), g_stage_vb_hash.data(), g_stage_vb_hash.size(),
-                             g_stage_locked, g_stage_vb_state, g_stage_attest_version_tee,
-                             g_stage_attest_version_strongbox, p->ids);
-  };
-  ::Ta* ta_tee = buildTa(static_cast<int32_t>(SecurityLevel::TRUSTED_ENVIRONMENT));
-  ::Ta* ta_sb = buildTa(static_cast<int32_t>(SecurityLevel::STRONGBOX));
-  if (!ta_tee || !ta_sb) {
-    LOGE("teesim_cfg_add_profile: profile %s failed to build (bad keybox?)", p->id ? p->id : "?");
-    if (ta_tee) teesim_km_destroy(ta_tee);
-    if (ta_sb) teesim_km_destroy(ta_sb);
-    return false;
+  const bool is_hardware = p->mode && std::string(p->mode) == "hardware";
+  ::Ta* ta_tee = nullptr;
+  ::Ta* ta_sb = nullptr;
+
+  if (!is_hardware) {
+    auto buildTa = [&](int32_t level) -> ::Ta* {
+      return teesim_km_init_ex(p->keybox, p->keybox_len, level, p->os_version, p->os_patchlevel,
+                               p->vendor_patchlevel, p->boot_patchlevel, g_stage_vb_key.data(),
+                               g_stage_vb_key.size(), g_stage_vb_hash.data(), g_stage_vb_hash.size(),
+                               g_stage_locked, g_stage_vb_state, g_stage_attest_version_tee,
+                               g_stage_attest_version_strongbox, p->ids);
+    };
+    ta_tee = buildTa(static_cast<int32_t>(SecurityLevel::TRUSTED_ENVIRONMENT));
+    ta_sb = buildTa(static_cast<int32_t>(SecurityLevel::STRONGBOX));
+    if (!ta_tee || !ta_sb) {
+      LOGE("teesim_cfg_add_profile: profile %s failed to build (bad keybox?)", p->id ? p->id : "?");
+      if (ta_tee) teesim_km_destroy(ta_tee);
+      if (ta_sb) teesim_km_destroy(ta_sb);
+      return false;
+    }
   }
+
   Profile prof;
   prof.id = p->id ? p->id : "";
   prof.ta_tee = WrapTa(ta_tee);
   prof.ta_strongbox = WrapTa(ta_sb);
   prof.patch_mode = p->mode && std::string(p->mode) == "patch";
-  // Seed both instances with the device-wide MODULE_HASH so a generation-mode key either mints carries
-  // the tag, independent of keystore2's one-shot delivery. Prefer keystore2's captured bytes; fall
-  // back to the daemon's computed value when we never saw that call. The reference TA emits the tag
-  // only for KeyMint v4+ attestations, so seeding an older-version profile is harmless.
-  {
+  prof.hardware_mode = is_hardware;
+
+  if (p->ids) {
+    auto addId = [&](Tag tag, const uint8_t* data, size_t len) {
+      if (data && len > 0) {
+        KeyParameter kp;
+        kp.tag = tag;
+        kp.value.set<KeyParameterValue::blob>(std::vector<uint8_t>(data, data + len));
+        prof.id_params.push_back(std::move(kp));
+      }
+    };
+    addId(Tag::ATTESTATION_ID_BRAND, p->ids->brand, p->ids->brand_len);
+    addId(Tag::ATTESTATION_ID_DEVICE, p->ids->device, p->ids->device_len);
+    addId(Tag::ATTESTATION_ID_PRODUCT, p->ids->product, p->ids->product_len);
+    addId(Tag::ATTESTATION_ID_SERIAL, p->ids->serial, p->ids->serial_len);
+    addId(Tag::ATTESTATION_ID_IMEI, p->ids->imei, p->ids->imei_len);
+    addId(Tag::ATTESTATION_ID_SECOND_IMEI, p->ids->imei2, p->ids->imei2_len);
+    addId(Tag::ATTESTATION_ID_MEID, p->ids->meid, p->ids->meid_len);
+    addId(Tag::ATTESTATION_ID_MANUFACTURER, p->ids->manufacturer, p->ids->manufacturer_len);
+    addId(Tag::ATTESTATION_ID_MODEL, p->ids->model, p->ids->model_len);
+  }
+
+  if (!is_hardware) {
     std::vector<uint8_t> seed;
     {
       std::lock_guard<std::mutex> lk(g_cfg_mu);
@@ -1632,10 +1711,10 @@ extern "C" bool teesim_cfg_add_profile(const TsProfile* p) {
     prof.uid_names.emplace_back(name);
   }
   LOGI("teesim_cfg_add_profile: staged profile '%s' (mode=%s, security_level=%s, %zu package(s), "
-       "%zu uid(s))",
-       prof.id.c_str(), prof.patch_mode ? "patch" : "generation",
+       "%zu uid(s), %zu id_params)",
+       prof.id.c_str(), prof.hardware_mode ? "hardware" : (prof.patch_mode ? "patch" : "generation"),
        LevelName(static_cast<SecurityLevel>(p->security_level)),
-       prof.packages.size(), prof.uids.size());
+       prof.packages.size(), prof.uids.size(), prof.id_params.size());
   for (const auto& pkg : prof.packages)
     LOGD("teesim_cfg_add_profile:   package '%s' in user %d", pkg.name.c_str(), pkg.user_id);
   g_staging.push_back(std::move(prof));
@@ -1679,6 +1758,10 @@ extern "C" bool teesim_cfg_resign(const char* profile_id, const uint8_t* leaf, s
     std::lock_guard<std::mutex> lk(g_cfg_mu);
     for (const auto& prof : g_profiles) {
       if (prof.id == profile_id) {
+        if (prof.hardware_mode) {
+          LOGD("teesim_cfg_resign: profile '%s' is in hardware mode (no keybox); skipping resign", profile_id);
+          return false;
+        }
         // Re-signing is level-independent (same keybox and patched root of trust at either level).
         ta = prof.ta_tee;
         break;

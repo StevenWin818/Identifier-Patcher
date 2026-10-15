@@ -961,14 +961,18 @@ extern "C" void teesim_cfg_begin(const TsBootInfo* boot) {
 }
 
 extern "C" bool teesim_cfg_add_profile(const TsProfile* p) {
-  Ta* ta = teesim_km_init_ex(p->keybox, p->keybox_len, p->security_level, p->os_version,
-                             p->os_patchlevel, p->vendor_patchlevel, p->boot_patchlevel,
-                             g_stage_vb_key.data(), g_stage_vb_key.size(), g_stage_vb_hash.data(),
-                             g_stage_vb_hash.size(), g_stage_locked, g_stage_vb_state,
-                             g_stage_attest_version_tee, g_stage_attest_version_strongbox, p->ids);
-  if (!ta) {
-    LOGE("teesim_cfg_add_profile: profile %s failed to build (bad keybox?)", p->id ? p->id : "?");
-    return false;
+  const bool is_hardware = p->mode && std::string(p->mode) == "hardware";
+  Ta* ta = nullptr;
+  if (!is_hardware) {
+    ta = teesim_km_init_ex(p->keybox, p->keybox_len, p->security_level, p->os_version,
+                           p->os_patchlevel, p->vendor_patchlevel, p->boot_patchlevel,
+                           g_stage_vb_key.data(), g_stage_vb_key.size(), g_stage_vb_hash.data(),
+                           g_stage_vb_hash.size(), g_stage_locked, g_stage_vb_state,
+                           g_stage_attest_version_tee, g_stage_attest_version_strongbox, p->ids);
+    if (!ta) {
+      LOGE("teesim_cfg_add_profile: profile %s failed to build (bad keybox?)", p->id ? p->id : "?");
+      return false;
+    }
   }
   Profile prof;
   prof.id = p->id ? p->id : "";
